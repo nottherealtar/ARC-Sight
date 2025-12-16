@@ -12,13 +12,13 @@ namespace ARC_Sight
         public SettingsWindow()
         {
             InitializeComponent();
-            
+
             HotkeyBox.Text = MainWindow.Hotkey;
             NotifyBox.Text = (MainWindow.NotifySeconds / 60).ToString();
-            
+
             SoundCheck.IsChecked = MainWindow.SoundEnabled;
             TimeCheck.IsChecked = MainWindow.ShowLocalTime;
-            
+
             LoadLanguages();
             ApplyTranslations();
         }
@@ -59,7 +59,7 @@ namespace ARC_Sight
                 foreach (var file in files)
                 {
                     string code = Path.GetFileName(file).Replace("lang_", "").Replace(".ini", "");
-                    string name = code.ToUpper(); 
+                    string name = code.ToUpper();
                     try
                     {
                         foreach (var line in File.ReadAllLines(file))
@@ -88,7 +88,7 @@ namespace ARC_Sight
             if (int.TryParse(NotifyBox.Text, out int min)) MainWindow.NotifySeconds = min * 60;
             MainWindow.SoundEnabled = SoundCheck.IsChecked ?? true;
             MainWindow.ShowLocalTime = TimeCheck.IsChecked ?? false;
-            
+
             if (LangCombo.SelectedItem is ComboBoxItem item)
                 MainWindow.CurrentLanguage = item.Tag?.ToString() ?? "en";
 

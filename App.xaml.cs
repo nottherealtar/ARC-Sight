@@ -8,7 +8,7 @@ namespace ARC_Sight
 {
     public partial class App : Application
     {
-        private static Mutex _mutex;
+        private static Mutex? _mutex;
 
         protected override void OnStartup(StartupEventArgs e)
         {

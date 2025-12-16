@@ -24,7 +24,7 @@ namespace ARC_Sight
 {
     public partial class MainWindow : Window
     {
-        public static string AppVersion { get; } = "v1.2.1";
+        public static string AppVersion { get; } = "v1.3.0";
 
         private const string NOTE_URL = "https://raw.githubusercontent.com/rodafux/ARC-Sight/refs/heads/Default/msg.ini";
         private const string API_URL = "https://metaforge.app/api/arc-raiders/event-timers";
@@ -42,6 +42,10 @@ namespace ARC_Sight
 
         private static MediaPlayer _mediaPlayer = new MediaPlayer();
         private Velopack.UpdateInfo? _updateInfo;
+        private bool _isWindowLocked = true;
+
+        private bool _isDragging = false;
+        private Point _dragOffset;
 
         public ObservableCollection<TabViewModel> Tabs { get; set; } = new ObservableCollection<TabViewModel>();
 
@@ -67,6 +71,9 @@ namespace ARC_Sight
 
             MainTabControl.ItemsSource = Tabs;
             this.Loaded += MainWindow_Loaded;
+
+            this.MouseMove += MainWindow_MouseMove;
+            this.MouseLeftButtonUp += MainWindow_MouseLeftButtonUp;
         }
 
         private void LoadLogoSafe()
@@ -186,23 +193,23 @@ namespace ARC_Sight
             {
 #if DEBUG
                 this.Dispatcher.Invoke(() => {
-                    UpdateBtn.Content = GetTrans("update_available_button", "UI"); // AJOUTÉ : Traduction dynamique
+                    UpdateBtn.Content = GetTrans("update_available_button", "UI");
                     UpdateBtn.Visibility = Visibility.Visible;
                     System.Diagnostics.Debug.WriteLine("DEBUG : Bouton UPDATE forcé avec traduction.");
                 });
 #else
-        var mgr = new UpdateManager(new GithubSource(GITHUB_REPO_URL, null, false));
-        var newVersion = await mgr.CheckForUpdatesAsync();
+                var mgr = new UpdateManager(new GithubSource(GITHUB_REPO_URL, null, false));
+                var newVersion = await mgr.CheckForUpdatesAsync();
 
-        if (newVersion != null)
-        {
-            _updateInfo = newVersion;
-            this.Dispatcher.Invoke(() =>
-            {
-                UpdateBtn.Content = GetTrans("update_available_button", "UI"); // AJOUTÉ : Traduction dynamique
-                UpdateBtn.Visibility = Visibility.Visible;
-            });
-        }
+                if (newVersion != null)
+                {
+                    _updateInfo = newVersion;
+                    this.Dispatcher.Invoke(() =>
+                    {
+                        UpdateBtn.Content = GetTrans("update_available_button", "UI");
+                        UpdateBtn.Visibility = Visibility.Visible;
+                    });
+                }
 #endif
             }
             catch (Exception ex)
@@ -211,29 +218,53 @@ namespace ARC_Sight
             }
         }
 
+        // MainWindow.xaml.cs
         private async void UpdateBtn_Click(object sender, RoutedEventArgs e)
         {
 #if DEBUG
-            MessageBox.Show("TEST : Détection réussie !");
+            UpdateBtn.Visibility = Visibility.Collapsed;
+            UpdateProgressPanel.Visibility = Visibility.Visible;
+
+            for (int i = 0; i <= 100; i += 2)
+            {
+                UpdateProgressBar.Value = i;
+                await Task.Delay(50);
+            }
+
+            MessageBox.Show("Simulation Update Completed. Restarting...");
+            UpdateBtn.Visibility = Visibility.Visible;
+            UpdateProgressPanel.Visibility = Visibility.Collapsed;
+            UpdateProgressBar.Value = 0;
 #else
     if (_updateInfo == null) return;
 
     try
     {
-        // Utilise les clés 'update_downloading' et 'update_installing' de votre fichier INI
-        UpdateBtn.Content = GetTrans("update_downloading", "UI"); 
+        UpdateBtn.Visibility = Visibility.Collapsed;
+        UpdateProgressPanel.Visibility = Visibility.Visible;
         UpdateBtn.IsEnabled = false;
 
         var mgr = new UpdateManager(new GithubSource(GITHUB_REPO_URL, null, false));
-        await mgr.DownloadUpdatesAsync(_updateInfo);
+        
+        Action<int> progressAction = percent => 
+        {
+            this.Dispatcher.Invoke(() => UpdateProgressBar.Value = percent);
+        };
+
+        await mgr.DownloadUpdatesAsync(_updateInfo, progressAction);
 
         UpdateBtn.Content = GetTrans("update_installing", "UI");
+        UpdateBtn.Visibility = Visibility.Visible;
+        UpdateProgressPanel.Visibility = Visibility.Collapsed;
+        
         mgr.ApplyUpdatesAndRestart(_updateInfo);
     }
-    catch (Exception ex)
+    catch (Exception) // Changement : suppression de 'ex'
     {
         UpdateBtn.Content = GetTrans("update_error", "UI");
         UpdateBtn.IsEnabled = true;
+        UpdateBtn.Visibility = Visibility.Visible;
+        UpdateProgressPanel.Visibility = Visibility.Collapsed;
     }
 #endif
         }
@@ -259,7 +290,13 @@ namespace ARC_Sight
             this.Top = 0;
             this.Width = SystemParameters.PrimaryScreenWidth;
 
+            UpdateLocalizedUI();
+
             _windowHandle = new WindowInteropHelper(this).Handle;
+
+            var style = GetWindowLong(_windowHandle, GWL_STYLE);
+            SetWindowLong(_windowHandle, GWL_STYLE, style & ~WS_MAXIMIZEBOX);
+
             HwndSource? source = HwndSource.FromHwnd(_windowHandle);
             source?.AddHook(HwndHook);
             RegisterHotKey(_windowHandle, 1, 0, GetVkCode(Hotkey));
@@ -282,6 +319,13 @@ namespace ARC_Sight
             _ = CheckForUpdates();
         }
 
+        private void UpdateLocalizedUI()
+        {
+            string tooltip = GetTrans("lock_tooltip", "UI");
+            if (string.IsNullOrEmpty(tooltip)) tooltip = "Lock / Unlock window position";
+            if (LockBtn != null) LockBtn.ToolTip = tooltip;
+        }
+
         private void ListBox_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
         {
             if (sender is ListBox listBox && e.Delta != 0)
@@ -289,8 +333,11 @@ namespace ARC_Sight
                 var scrollViewer = FindVisualChild<ScrollViewer>(listBox);
                 if (scrollViewer != null)
                 {
-                    if (e.Delta > 0) scrollViewer.LineLeft();
-                    else scrollViewer.LineRight();
+                    for (int i = 0; i < 40; i++)
+                    {
+                        if (e.Delta > 0) scrollViewer.LineLeft();
+                        else scrollViewer.LineRight();
+                    }
                     e.Handled = true;
                 }
             }
@@ -414,7 +461,12 @@ namespace ARC_Sight
 
         [DllImport("user32.dll")] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
         [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+        [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+        [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
         private const int WM_HOTKEY = 0x0312;
+        private const int GWL_STYLE = -16;
+        private const int WS_MAXIMIZEBOX = 0x10000;
 
         private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
@@ -446,6 +498,7 @@ namespace ARC_Sight
                 Tabs.Clear();
                 _ = FetchData();
                 _ = FetchNote();
+                UpdateLocalizedUI();
 
                 if (UpdateBtn.Visibility == Visibility.Visible && UpdateBtn.IsEnabled)
                 {
@@ -470,6 +523,53 @@ namespace ARC_Sight
             if (dialog.ShowDialog() == true)
             {
                 Application.Current.Shutdown();
+            }
+        }
+
+        private void ToggleLock_Click(object sender, RoutedEventArgs e)
+        {
+            _isWindowLocked = !_isWindowLocked;
+            LockBtn.Content = _isWindowLocked ? "🔒" : "🔓";
+            LockBtn.Foreground = _isWindowLocked ? new SolidColorBrush(Color.FromRgb(255, 85, 0)) : Brushes.White;
+
+            if (_isWindowLocked)
+            {
+                this.ResizeMode = ResizeMode.NoResize;
+            }
+            else
+            {
+                this.ResizeMode = ResizeMode.CanResize;
+            }
+        }
+
+        private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (!_isWindowLocked)
+            {
+                _isDragging = true;
+                _dragOffset = e.GetPosition(this);
+                this.CaptureMouse();
+            }
+        }
+
+        private void MainWindow_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (_isDragging)
+            {
+                var currentPoint = e.GetPosition(this);
+                var diff = currentPoint - _dragOffset;
+
+                this.Left += diff.X;
+                this.Top += diff.Y;
+            }
+        }
+
+        private void MainWindow_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_isDragging)
+            {
+                _isDragging = false;
+                this.ReleaseMouseCapture();
             }
         }
     }
@@ -524,6 +624,8 @@ namespace ARC_Sight
         public bool IsAlertEnabled { get => _isAlertEnabled; set { _isAlertEnabled = value; OnPropertyChanged(nameof(IsAlertEnabled)); if (!value) HasNotified = false; } }
         private Visibility _alertVisibility = Visibility.Visible;
         public Visibility AlertVisibility { get => _alertVisibility; set { if (_alertVisibility != value) { _alertVisibility = value; OnPropertyChanged(nameof(AlertVisibility)); } } }
+        private double _localTimeFontSize = 20;
+        public double LocalTimeFontSize { get => _localTimeFontSize; set { if (_localTimeFontSize != value) { _localTimeFontSize = value; OnPropertyChanged(nameof(LocalTimeFontSize)); } } }
         private bool HasNotified = false;
         public CardViewModel(EventData data) { RawData = data; BorderColor = new SolidColorBrush(Color.FromRgb(60, 60, 60)); LoadImage(); UpdateTimer(); }
         private void LoadImage()
