@@ -24,12 +24,13 @@ namespace ARC_Sight
 {
     public partial class MainWindow : Window
     {
-        public static string AppVersion { get; } = "v1.3.0";
+        public static string AppVersion { get; } = "1.3.1";
 
         private const string NOTE_URL = "https://raw.githubusercontent.com/rodafux/ARC-Sight/refs/heads/Default/msg.ini";
-        private const string API_URL = "https://metaforge.app/api/arc-raiders/event-timers";
+        private const string API_URL = "https://metaforge.app/api/arc-raiders/events-schedule";
         private const string HEARTBEAT_URL = "https://arc-sight-stats-viewer.onrender.com/ping";
         private const string GITHUB_REPO_URL = "https://github.com/rodafux/ARC-Sight";
+        private const string GITHUB_RELEASE_API = "https://api.github.com/repos/rodafux/ARC-Sight/releases/tags/";
 
         public static string AppDataPath { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ARC-Sight");
         public static string ConfigFile { get; } = Path.Combine(AppDataPath, "config.ini");
@@ -56,6 +57,7 @@ namespace ARC_Sight
         public static bool SoundEnabled { get; set; } = true;
         public static bool ShowLocalTime { get; set; } = false;
         public static string CurrentLanguage { get; set; } = "en";
+        public static string LastSeenVersion { get; set; } = "v0.0.0";
 
         public static readonly Dictionary<string, string> Translations = new Dictionary<string, string>();
 
@@ -110,7 +112,6 @@ namespace ARC_Sight
                 string wavPath = Path.Combine(assetsPath, "Notif.wav");
 
                 string finalPath = "";
-
                 if (File.Exists(mp3Path)) finalPath = mp3Path;
                 else if (File.Exists(wavPath)) finalPath = wavPath;
 
@@ -134,13 +135,11 @@ namespace ARC_Sight
 
                     var request = new HttpRequestMessage(HttpMethod.Post, HEARTBEAT_URL);
                     request.Headers.Add("User-Agent", "ARC-Sight-Desktop-Client/1.0");
-                    request.Headers.Add("X-App-Secret", "ARC-RAIDERS-OPS");
                     request.Content = content;
 
                     await _client.SendAsync(request);
                 }
                 catch { }
-
                 await Task.Delay(60000);
             }
         }
@@ -149,12 +148,12 @@ namespace ARC_Sight
         {
             try
             {
-                var content = await _client.GetStringAsync(NOTE_URL);
+                string url = $"{NOTE_URL}?t={DateTime.UtcNow.Ticks}";
+                var content = await _client.GetStringAsync(url);
 
                 if (!string.IsNullOrWhiteSpace(content))
                 {
                     var lines = content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries);
-
                     string targetKey = CurrentLanguage.ToUpper() + "=";
                     string message = "";
 
@@ -171,7 +170,6 @@ namespace ARC_Sight
                     {
                         string header = GetTrans("note_header", "UI");
                         if (string.IsNullOrEmpty(header)) header = "NOTE IMPORTANTE :";
-
                         NoteText.Text = $"{header} {message}";
                         NoteText.Visibility = Visibility.Visible;
                     }
@@ -181,10 +179,7 @@ namespace ARC_Sight
                     }
                 }
             }
-            catch
-            {
-                NoteText.Visibility = Visibility.Collapsed;
-            }
+            catch { NoteText.Visibility = Visibility.Collapsed; }
         }
 
         private async Task CheckForUpdates()
@@ -192,15 +187,9 @@ namespace ARC_Sight
             try
             {
 #if DEBUG
-                this.Dispatcher.Invoke(() => {
-                    UpdateBtn.Content = GetTrans("update_available_button", "UI");
-                    UpdateBtn.Visibility = Visibility.Visible;
-                    System.Diagnostics.Debug.WriteLine("DEBUG : Bouton UPDATE forcé avec traduction.");
-                });
 #else
                 var mgr = new UpdateManager(new GithubSource(GITHUB_REPO_URL, null, false));
                 var newVersion = await mgr.CheckForUpdatesAsync();
-
                 if (newVersion != null)
                 {
                     _updateInfo = newVersion;
@@ -212,88 +201,49 @@ namespace ARC_Sight
                 }
 #endif
             }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Update Check Error: {ex.Message}");
-            }
+            catch { }
         }
 
-        // MainWindow.xaml.cs
         private async void UpdateBtn_Click(object sender, RoutedEventArgs e)
         {
 #if DEBUG
-            UpdateBtn.Visibility = Visibility.Collapsed;
-            UpdateProgressPanel.Visibility = Visibility.Visible;
-
-            for (int i = 0; i <= 100; i += 2)
-            {
-                UpdateProgressBar.Value = i;
-                await Task.Delay(50);
-            }
-
-            MessageBox.Show("Simulation Update Completed. Restarting...");
-            UpdateBtn.Visibility = Visibility.Visible;
-            UpdateProgressPanel.Visibility = Visibility.Collapsed;
-            UpdateProgressBar.Value = 0;
+            MessageBox.Show("Update simulation in DEBUG mode.");
 #else
-    if (_updateInfo == null) return;
+            if (_updateInfo == null) return;
+            try
+            {
+                UpdateBtn.Visibility = Visibility.Collapsed;
+                UpdateProgressPanel.Visibility = Visibility.Visible;
+                UpdateBtn.IsEnabled = false;
 
-    try
-    {
-        UpdateBtn.Visibility = Visibility.Collapsed;
-        UpdateProgressPanel.Visibility = Visibility.Visible;
-        UpdateBtn.IsEnabled = false;
+                var mgr = new UpdateManager(new GithubSource(GITHUB_REPO_URL, null, false));
+                Action<int> progressAction = percent => this.Dispatcher.Invoke(() => UpdateProgressBar.Value = percent);
 
-        var mgr = new UpdateManager(new GithubSource(GITHUB_REPO_URL, null, false));
-        
-        Action<int> progressAction = percent => 
-        {
-            this.Dispatcher.Invoke(() => UpdateProgressBar.Value = percent);
-        };
-
-        await mgr.DownloadUpdatesAsync(_updateInfo, progressAction);
-
-        UpdateBtn.Content = GetTrans("update_installing", "UI");
-        UpdateBtn.Visibility = Visibility.Visible;
-        UpdateProgressPanel.Visibility = Visibility.Collapsed;
-        
-        mgr.ApplyUpdatesAndRestart(_updateInfo);
-    }
-    catch (Exception) // Changement : suppression de 'ex'
-    {
-        UpdateBtn.Content = GetTrans("update_error", "UI");
-        UpdateBtn.IsEnabled = true;
-        UpdateBtn.Visibility = Visibility.Visible;
-        UpdateProgressPanel.Visibility = Visibility.Collapsed;
-    }
+                await mgr.DownloadUpdatesAsync(_updateInfo, progressAction);
+                mgr.ApplyUpdatesAndRestart(_updateInfo);
+            }
+            catch
+            {
+                UpdateBtn.Content = GetTrans("update_error", "UI");
+                UpdateBtn.IsEnabled = true;
+                UpdateBtn.Visibility = Visibility.Visible;
+                UpdateProgressPanel.Visibility = Visibility.Collapsed;
+            }
 #endif
         }
 
         public static void TriggerNotification(string title, string message)
         {
-            if (SoundEnabled)
-            {
-                try
-                {
-                    _mediaPlayer.Stop();
-                    _mediaPlayer.Play();
-                }
-                catch { }
-            }
-
+            if (SoundEnabled) { try { _mediaPlayer.Stop(); _mediaPlayer.Play(); } catch { } }
             Application.Current.Dispatcher.Invoke(() => { try { new ToastWindow(title, message).Show(); } catch { } });
         }
 
-        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            this.Left = 0;
-            this.Top = 0;
-            this.Width = SystemParameters.PrimaryScreenWidth;
-
+            this.Left = 0; this.Top = 0; this.Width = SystemParameters.PrimaryScreenWidth;
             UpdateLocalizedUI();
 
             _windowHandle = new WindowInteropHelper(this).Handle;
-
             var style = GetWindowLong(_windowHandle, GWL_STYLE);
             SetWindowLong(_windowHandle, GWL_STYLE, style & ~WS_MAXIMIZEBOX);
 
@@ -306,17 +256,67 @@ namespace ARC_Sight
             _uiTimer.Start();
 
             _apiTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
-            _apiTimer.Tick += async (s, ev) =>
-            {
-                await FetchData();
-                await FetchNote();
-            };
+            _apiTimer.Tick += async (s, ev) => { await FetchData(); await FetchNote(); };
             _apiTimer.Start();
 
-            _ = FetchData();
-            _ = FetchNote();
+            await InitialLoad();
             _ = StartHeartbeat();
             _ = CheckForUpdates();
+        }
+
+        private async Task InitialLoad()
+        {
+            StatusText.Text = "Loading...";
+            await FetchData();
+            await FetchNote();
+            await CheckAndShowChangelog();
+        }
+
+        private async Task CheckAndShowChangelog()
+        {
+            if (AppVersion != LastSeenVersion)
+            {
+                await FetchAndShowChangelogData(AppVersion);
+                LastSeenVersion = AppVersion;
+                SaveConfig();
+            }
+        }
+
+        public async Task FetchAndShowChangelogData(string versionTag)
+        {
+            try
+            {
+                string url = $"{GITHUB_RELEASE_API}{versionTag}";
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Add("User-Agent", "ARC-Sight-App");
+
+                var response = await _client.SendAsync(request);
+                string notes = "No details available.";
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    using (JsonDocument doc = JsonDocument.Parse(json))
+                    {
+                        if (doc.RootElement.TryGetProperty("body", out var bodyElement))
+                        {
+                            notes = bodyElement.GetString() ?? "No content.";
+                        }
+                    }
+                }
+                else
+                {
+                    notes = $"Could not fetch patch notes for {versionTag}.\n(GitHub API limit or invalid tag)";
+                }
+
+                ChangelogWindow cw = new ChangelogWindow(notes);
+                cw.Owner = this;
+                cw.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error fetching notes: {ex.Message}");
+            }
         }
 
         private void UpdateLocalizedUI()
@@ -333,11 +333,7 @@ namespace ARC_Sight
                 var scrollViewer = FindVisualChild<ScrollViewer>(listBox);
                 if (scrollViewer != null)
                 {
-                    for (int i = 0; i < 40; i++)
-                    {
-                        if (e.Delta > 0) scrollViewer.LineLeft();
-                        else scrollViewer.LineRight();
-                    }
+                    for (int i = 0; i < 40; i++) { if (e.Delta > 0) scrollViewer.LineLeft(); else scrollViewer.LineRight(); }
                     e.Handled = true;
                 }
             }
@@ -362,33 +358,78 @@ namespace ARC_Sight
             {
                 StatusText.Text = "Updating...";
                 _client.DefaultRequestHeaders.UserAgent.ParseAdd("ARC-Sight/1.0");
-                var json = await _client.GetStringAsync(API_URL);
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                var result = JsonSerializer.Deserialize<ApiResult>(json, options);
 
-                if (result?.data != null)
+                var json = await _client.GetStringAsync(API_URL);
+
+                var doc = JsonDocument.Parse(json);
+                JsonElement root = doc.RootElement;
+                List<ScheduleEvent>? rawEvents = null;
+
+                if (root.ValueKind == JsonValueKind.Array)
                 {
-                    UpdateUiData(result.data);
+                    rawEvents = JsonSerializer.Deserialize<List<ScheduleEvent>>(json);
+                }
+                else if (root.ValueKind == JsonValueKind.Object)
+                {
+                    if (root.TryGetProperty("events", out var eventsElem))
+                        rawEvents = JsonSerializer.Deserialize<List<ScheduleEvent>>(eventsElem.GetRawText());
+                    else if (root.TryGetProperty("data", out var dataElem))
+                        rawEvents = JsonSerializer.Deserialize<List<ScheduleEvent>>(dataElem.GetRawText());
+                }
+
+                if (rawEvents != null && rawEvents.Count > 0)
+                {
+                    ProcessScheduleData(rawEvents);
                     StatusText.Text = "";
                 }
+                else
+                {
+                    StatusText.Text = "No events found";
+                }
             }
-            catch
+            catch (Exception ex)
             {
                 StatusText.Text = "API Error";
+                System.Diagnostics.Debug.WriteLine(ex.Message);
             }
         }
 
-        private void UpdateUiData(List<EventData> data)
+        private void ProcessScheduleData(List<ScheduleEvent> schedule)
+        {
+            var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var processedData = new List<EventDisplayData>();
+
+            var groups = schedule.GroupBy(e => new { e.name, e.map });
+
+            foreach (var group in groups)
+            {
+                var active = group.FirstOrDefault(e => e.startTime <= nowUnix && e.endTime > nowUnix);
+
+                if (active != null)
+                {
+                    processedData.Add(new EventDisplayData(active));
+                }
+                else
+                {
+                    var next = group.Where(e => e.startTime > nowUnix).OrderBy(e => e.startTime).FirstOrDefault();
+                    if (next != null)
+                    {
+                        processedData.Add(new EventDisplayData(next));
+                    }
+                }
+            }
+
+            UpdateUiWithProcessedData(processedData);
+        }
+
+        private void UpdateUiWithProcessedData(List<EventDisplayData> data)
         {
             var allTab = Tabs.FirstOrDefault(t => t.Header == "ALL");
-            if (allTab == null)
-            {
-                allTab = new TabViewModel("ALL");
-                Tabs.Insert(0, allTab);
-            }
+            if (allTab == null) { allTab = new TabViewModel("ALL"); Tabs.Insert(0, allTab); }
+
             MergeCards(allTab.Cards, data);
 
-            var grouped = data.GroupBy(e => e.name).OrderBy(g => g.Key);
+            var grouped = data.GroupBy(e => e.Raw.name).OrderBy(g => g.Key);
             foreach (var group in grouped)
             {
                 string tabName = GetTrans(group.Key ?? "Unknown", "TABS");
@@ -398,15 +439,27 @@ namespace ARC_Sight
             }
         }
 
-        private void MergeCards(ObservableCollection<CardViewModel> collection, List<EventData> newEvents)
+        private void MergeCards(ObservableCollection<CardViewModel> collection, List<EventDisplayData> newEvents)
         {
+            for (int i = collection.Count - 1; i >= 0; i--)
+            {
+                var card = collection[i];
+                if (!newEvents.Any(e => e.Raw.name == card.RawData.name && e.Raw.map == card.RawData.map))
+                {
+                    collection.RemoveAt(i);
+                }
+            }
+
             foreach (var evt in newEvents)
             {
-                var existing = collection.FirstOrDefault(c => c.RawData.name == evt.name && c.RawData.map == evt.map);
-                if (existing != null) existing.RawData = evt;
+                var existing = collection.FirstOrDefault(c => c.RawData.name == evt.Raw.name && c.RawData.map == evt.Raw.map);
+                if (existing != null)
+                {
+                    existing.UpdateData(evt.Raw);
+                }
                 else
                 {
-                    var newCard = new CardViewModel(evt);
+                    var newCard = new CardViewModel(evt.Raw);
                     newCard.RequestNotification += TriggerNotification;
                     collection.Add(newCard);
                 }
@@ -436,8 +489,27 @@ namespace ARC_Sight
                     if (line.StartsWith("notify_minutes=") && int.TryParse(line.Split('=')[1], out int m)) NotifySeconds = m * 60;
                     if (line.StartsWith("sound_enabled=")) { if (bool.TryParse(line.Split('=')[1], out bool s)) SoundEnabled = s; }
                     if (line.StartsWith("show_local_time=")) { if (bool.TryParse(line.Split('=')[1], out bool sl)) ShowLocalTime = sl; }
+                    if (line.StartsWith("last_seen_version=")) LastSeenVersion = line.Split('=')[1];
                 }
             }
+        }
+
+        public static void SaveConfig()
+        {
+            try
+            {
+                Directory.CreateDirectory(AppDataPath);
+                string[] lines = {
+                    $"hotkey={Hotkey}",
+                    $"notify_minutes={NotifySeconds/60}",
+                    $"language={CurrentLanguage}",
+                    $"sound_enabled={SoundEnabled}",
+                    $"show_local_time={ShowLocalTime}",
+                    $"last_seen_version={LastSeenVersion}"
+                };
+                File.WriteAllLines(ConfigFile, lines);
+            }
+            catch { }
         }
 
         public static void LoadLanguage()
@@ -445,17 +517,10 @@ namespace ARC_Sight
             Translations.Clear();
             string path = Path.Combine(LanguagesDir, $"lang_{CurrentLanguage}.ini");
             if (!File.Exists(path)) path = Path.Combine(LanguagesDir, "lang_en.ini");
-
             if (File.Exists(path))
             {
                 foreach (var line in File.ReadAllLines(path))
-                {
-                    if (line.Contains("="))
-                    {
-                        var p = line.Split(new[] { '=' }, 2);
-                        if (p.Length > 1) Translations[p[0].Trim().ToLower()] = p[1].Trim();
-                    }
-                }
+                    if (line.Contains("=")) { var p = line.Split(new[] { '=' }, 2); if (p.Length > 1) Translations[p[0].Trim().ToLower()] = p[1].Trim(); }
             }
         }
 
@@ -463,18 +528,11 @@ namespace ARC_Sight
         [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
         [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
         [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
-
-        private const int WM_HOTKEY = 0x0312;
-        private const int GWL_STYLE = -16;
-        private const int WS_MAXIMIZEBOX = 0x10000;
+        private const int WM_HOTKEY = 0x0312; private const int GWL_STYLE = -16; private const int WS_MAXIMIZEBOX = 0x10000;
 
         private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
-            if (msg == WM_HOTKEY && wParam.ToInt32() == 1)
-            {
-                if (Visibility == Visibility.Visible) Hide(); else { Show(); Activate(); }
-                handled = true;
-            }
+            if (msg == WM_HOTKEY && wParam.ToInt32() == 1) { if (Visibility == Visibility.Visible) Hide(); else { Show(); Activate(); } handled = true; }
             return IntPtr.Zero;
         }
 
@@ -489,41 +547,19 @@ namespace ARC_Sight
 
         private void OpenSettings_Click(object sender, RoutedEventArgs e)
         {
-            SettingsWindow sw = new SettingsWindow();
-            sw.Owner = this;
+            SettingsWindow sw = new SettingsWindow(); sw.Owner = this;
             if (sw.ShowDialog() == true)
             {
-                UnregisterHotKey(_windowHandle, 1);
-                RegisterHotKey(_windowHandle, 1, 0, GetVkCode(Hotkey));
-                Tabs.Clear();
-                _ = FetchData();
-                _ = FetchNote();
-                UpdateLocalizedUI();
-
-                if (UpdateBtn.Visibility == Visibility.Visible && UpdateBtn.IsEnabled)
-                {
-                    UpdateBtn.Content = GetTrans("update_available_button", "UI");
-                }
+                UnregisterHotKey(_windowHandle, 1); RegisterHotKey(_windowHandle, 1, 0, GetVkCode(Hotkey));
+                Tabs.Clear(); _ = InitialLoad(); UpdateLocalizedUI();
             }
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
-            string title = GetTrans("exit_confirm_title", "UI");
-            string message = GetTrans("exit_confirm_msg", "UI");
-            string yesText = GetTrans("yes_btn", "UI");
-            string noText = GetTrans("no_btn", "UI");
-
-            if (string.IsNullOrEmpty(yesText)) yesText = "YES";
-            if (string.IsNullOrEmpty(noText)) noText = "NO";
-
-            var dialog = new ConfirmationWindow(title, message, yesText, noText);
+            var dialog = new ConfirmationWindow(GetTrans("exit_confirm_title", "UI"), GetTrans("exit_confirm_msg", "UI"), GetTrans("yes_btn", "UI"), GetTrans("no_btn", "UI"));
             dialog.Owner = this;
-
-            if (dialog.ShowDialog() == true)
-            {
-                Application.Current.Shutdown();
-            }
+            if (dialog.ShowDialog() == true) Application.Current.Shutdown();
         }
 
         private void ToggleLock_Click(object sender, RoutedEventArgs e)
@@ -531,47 +567,27 @@ namespace ARC_Sight
             _isWindowLocked = !_isWindowLocked;
             LockBtn.Content = _isWindowLocked ? "🔒" : "🔓";
             LockBtn.Foreground = _isWindowLocked ? new SolidColorBrush(Color.FromRgb(255, 85, 0)) : Brushes.White;
-
-            if (_isWindowLocked)
-            {
-                this.ResizeMode = ResizeMode.NoResize;
-            }
-            else
-            {
-                this.ResizeMode = ResizeMode.CanResize;
-            }
+            this.ResizeMode = _isWindowLocked ? ResizeMode.NoResize : ResizeMode.CanResize;
         }
 
-        private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-        {
-            if (!_isWindowLocked)
-            {
-                _isDragging = true;
-                _dragOffset = e.GetPosition(this);
-                this.CaptureMouse();
-            }
-        }
+        private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) { if (!_isWindowLocked) { _isDragging = true; _dragOffset = e.GetPosition(this); this.CaptureMouse(); } }
+        private void MainWindow_MouseMove(object sender, MouseEventArgs e) { if (_isDragging) { var diff = e.GetPosition(this) - _dragOffset; this.Left += diff.X; this.Top += diff.Y; } }
+        private void MainWindow_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) { if (_isDragging) { _isDragging = false; this.ReleaseMouseCapture(); } }
+    }
 
-        private void MainWindow_MouseMove(object sender, MouseEventArgs e)
-        {
-            if (_isDragging)
-            {
-                var currentPoint = e.GetPosition(this);
-                var diff = currentPoint - _dragOffset;
+    public class ScheduleEvent
+    {
+        public string? name { get; set; }
+        public string? map { get; set; }
+        public string? icon { get; set; }
+        public long startTime { get; set; }
+        public long endTime { get; set; }
+    }
 
-                this.Left += diff.X;
-                this.Top += diff.Y;
-            }
-        }
-
-        private void MainWindow_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-        {
-            if (_isDragging)
-            {
-                _isDragging = false;
-                this.ReleaseMouseCapture();
-            }
-        }
+    public class EventDisplayData
+    {
+        public ScheduleEvent Raw { get; set; }
+        public EventDisplayData(ScheduleEvent raw) { Raw = raw; }
     }
 
     public class TabViewModel
@@ -589,45 +605,71 @@ namespace ARC_Sight
             SortedCards.SortDescriptions.Add(new SortDescription(nameof(CardViewModel.TargetTime), ListSortDirection.Ascending));
 
             var liveView = (ICollectionViewLiveShaping)SortedCards;
-            if (liveView.CanChangeLiveSorting)
-            {
-                liveView.IsLiveSorting = true;
-                liveView.LiveSortingProperties.Add(nameof(CardViewModel.IsActive));
-                liveView.LiveSortingProperties.Add(nameof(CardViewModel.TargetTime));
-            }
+            if (liveView.CanChangeLiveSorting) { liveView.IsLiveSorting = true; liveView.LiveSortingProperties.Add(nameof(CardViewModel.IsActive)); liveView.LiveSortingProperties.Add(nameof(CardViewModel.TargetTime)); }
         }
     }
 
     public class CardViewModel : INotifyPropertyChanged
     {
-        public EventData RawData;
+        public ScheduleEvent RawData;
         public event Action<string, string>? RequestNotification;
         public string Title => MainWindow.GetTrans(RawData.name ?? "", "TABS");
         public string Map => MainWindow.GetTrans(RawData.map ?? "", "MAPS");
         public string AlertLabel => MainWindow.GetTrans("alert_button_label", "UI");
         public ImageSource? BackgroundImage { get; private set; }
+
         private bool _isActive = false;
         public bool IsActive { get => _isActive; set { if (_isActive != value) { _isActive = value; OnPropertyChanged(nameof(IsActive)); } } }
+
         private DateTime _targetTime = DateTime.MaxValue;
         public DateTime TargetTime { get => _targetTime; set { if (_targetTime != value) { _targetTime = value; OnPropertyChanged(nameof(TargetTime)); } } }
+
         private string _timerText = "--:--";
         public string TimerText { get => _timerText; set { if (_timerText != value) { _timerText = value; OnPropertyChanged(nameof(TimerText)); } } }
+
         private string _timerPrefix = "";
         public string TimerPrefix { get => _timerPrefix; set { if (_timerPrefix != value) { _timerPrefix = value; OnPropertyChanged(nameof(TimerPrefix)); } } }
+
         private string _localTimeText = "";
         public string LocalTimeText { get => _localTimeText; set { if (_localTimeText != value) { _localTimeText = value; OnPropertyChanged(nameof(LocalTimeText)); } } }
+
         private Brush _timerColor = Brushes.White;
         public Brush TimerColor { get => _timerColor; set { if (_timerColor != value) { _timerColor = value; OnPropertyChanged(nameof(TimerColor)); } } }
+
         private Brush _borderColor = Brushes.Transparent;
         public Brush BorderColor { get => _borderColor; set { if (_borderColor != value) { _borderColor = value; OnPropertyChanged(nameof(BorderColor)); } } }
+
         private bool _isAlertEnabled = false;
         public bool IsAlertEnabled { get => _isAlertEnabled; set { _isAlertEnabled = value; OnPropertyChanged(nameof(IsAlertEnabled)); if (!value) HasNotified = false; } }
+
         private Visibility _alertVisibility = Visibility.Visible;
         public Visibility AlertVisibility { get => _alertVisibility; set { if (_alertVisibility != value) { _alertVisibility = value; OnPropertyChanged(nameof(AlertVisibility)); } } }
+
         private double _localTimeFontSize = 20;
         public double LocalTimeFontSize { get => _localTimeFontSize; set { if (_localTimeFontSize != value) { _localTimeFontSize = value; OnPropertyChanged(nameof(LocalTimeFontSize)); } } }
+
         private bool HasNotified = false;
-        public CardViewModel(EventData data) { RawData = data; BorderColor = new SolidColorBrush(Color.FromRgb(60, 60, 60)); LoadImage(); UpdateTimer(); }
+
+        public CardViewModel(ScheduleEvent data)
+        {
+            RawData = data;
+            BorderColor = new SolidColorBrush(Color.FromRgb(60, 60, 60));
+            LoadImage();
+            UpdateTimer();
+        }
+
+        public void UpdateData(ScheduleEvent newData)
+        {
+            if (RawData.startTime != newData.startTime || RawData.endTime != newData.endTime)
+            {
+                RawData = newData;
+                HasNotified = false;
+                UpdateTimer();
+                OnPropertyChanged(nameof(Title));
+                OnPropertyChanged(nameof(Map));
+            }
+        }
+
         private void LoadImage()
         {
             string mapName = RawData.map ?? "";
@@ -640,34 +682,16 @@ namespace ARC_Sight
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", imgFile);
             if (File.Exists(path)) { try { BackgroundImage = new BitmapImage(new Uri(path)); } catch { } }
         }
+
         public void UpdateTimer()
         {
-            if (RawData.times == null || RawData.times.Count == 0) return;
-            DateTime now = DateTime.UtcNow;
-            DateTime? foundTarget = null;
-            bool foundActive = false;
-            DateTime? nextStart = null;
-            var candidates = new List<DateTime>();
-            foreach (var slot in RawData.times)
-            {
-                try
-                {
-                    if (string.IsNullOrEmpty(slot.start) || string.IsNullOrEmpty(slot.end)) continue;
-                    var sParts = slot.start.Split(':').Select(int.Parse).ToArray();
-                    var eParts = slot.end.Split(':').Select(int.Parse).ToArray();
-                    DateTime tStart = now.Date.AddHours(sParts[0]).AddMinutes(sParts[1]);
-                    DateTime tEnd = now.Date.AddHours(eParts[0]).AddMinutes(eParts[1]);
-                    if (tEnd <= tStart) tEnd = tEnd.AddDays(1);
-                    if (now >= tStart && now < tEnd) { foundActive = true; foundTarget = tEnd; break; }
-                    DateTime tStartPrev = tStart.AddDays(-1);
-                    DateTime tEndPrev = tEnd.AddDays(-1);
-                    if (now >= tStartPrev && now < tEndPrev) { foundActive = true; foundTarget = tEndPrev; break; }
-                    if (tStart > now) candidates.Add(tStart); else candidates.Add(tStart.AddDays(1));
-                }
-                catch { continue; }
-            }
-            IsActive = foundActive;
+            long nowUnix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            bool isActive = (nowUnix >= RawData.startTime && nowUnix < RawData.endTime);
+            IsActive = isActive;
+
             AlertVisibility = IsActive ? Visibility.Collapsed : Visibility.Visible;
+
             string lang = MainWindow.CurrentLanguage;
             string startTxt = "STARTS IN"; string endTxt = "ENDS IN";
             if (lang == "fr") { startTxt = "DÉBUT DANS"; endTxt = "FIN DANS"; }
@@ -675,45 +699,63 @@ namespace ARC_Sight
             else if (lang == "es") { startTxt = "INICIA EN"; endTxt = "TERMINA EN"; }
             else if (lang == "it") { startTxt = "INIZIA TRA"; endTxt = "TERMINA TRA"; }
 
-            if (foundActive && foundTarget.HasValue)
+            TimeSpan diff;
+
+            if (isActive)
             {
-                TargetTime = foundTarget.Value; TimeSpan diff = foundTarget.Value - now;
-                TimerText = $"{diff.Hours}h {diff.Minutes}m"; TimerPrefix = endTxt;
-                TimerColor = Brushes.OrangeRed; BorderColor = Brushes.OrangeRed; IsAlertEnabled = false; LocalTimeText = "";
+                long diffMs = RawData.endTime - nowUnix;
+                diff = TimeSpan.FromMilliseconds(diffMs);
+                TargetTime = DateTimeOffset.FromUnixTimeMilliseconds(RawData.endTime).LocalDateTime;
+
+                TimerPrefix = endTxt;
+                TimerColor = Brushes.OrangeRed;
+                BorderColor = Brushes.OrangeRed;
+                IsAlertEnabled = false;
+                LocalTimeText = "";
             }
-            else if (candidates.Count > 0)
+            else
             {
-                TargetTime = candidates.OrderBy(t => t).First(); nextStart = TargetTime;
-                TimeSpan diff = TargetTime - now; TimerPrefix = startTxt;
-                if (diff.TotalHours >= 1) TimerText = $"{diff.Hours}h {diff.Minutes}m";
-                else TimerText = $"{diff.Minutes:D2}:{diff.Seconds:D2}";
-                if (MainWindow.ShowLocalTime && nextStart.HasValue) LocalTimeText = nextStart.Value.ToLocalTime().ToString("HH:mm"); else LocalTimeText = "";
-                if (diff.TotalSeconds <= MainWindow.NotifySeconds)
+                long diffMs = RawData.startTime - nowUnix;
+                diff = TimeSpan.FromMilliseconds(diffMs);
+                TargetTime = DateTimeOffset.FromUnixTimeMilliseconds(RawData.startTime).LocalDateTime;
+
+                TimerPrefix = startTxt;
+
+                if (MainWindow.ShowLocalTime)
+                    LocalTimeText = TargetTime.ToString("HH:mm");
+                else
+                    LocalTimeText = "";
+
+                if (diff.TotalSeconds <= MainWindow.NotifySeconds && diff.TotalSeconds > 0)
                 {
-                    TimerColor = Brushes.Yellow; BorderColor = Brushes.Yellow;
+                    TimerColor = Brushes.Yellow;
+                    BorderColor = Brushes.Yellow;
                     if (IsAlertEnabled && !HasNotified)
                     {
                         string msgPattern = MainWindow.GetTrans("notify_message", "UI");
-
                         if (string.IsNullOrEmpty(msgPattern)) msgPattern = "STARTING IN {minutes} MIN - {map_name}";
-
-                        string msg = msgPattern
-                            .Replace("{minutes}", ((int)diff.TotalMinutes).ToString())
-                            .Replace("{map_name}", Map);
-
+                        string msg = msgPattern.Replace("{minutes}", ((int)diff.TotalMinutes).ToString()).Replace("{map_name}", Map);
                         RequestNotification?.Invoke(Title, msg);
                         HasNotified = true;
                     }
                 }
-                else { TimerColor = Brushes.White; BorderColor = new SolidColorBrush(Color.FromRgb(60, 60, 60)); HasNotified = false; }
+                else
+                {
+                    TimerColor = Brushes.White;
+                    BorderColor = new SolidColorBrush(Color.FromRgb(60, 60, 60));
+                    HasNotified = false;
+                }
             }
-            else { TargetTime = DateTime.MaxValue; TimerText = "--:--"; TimerPrefix = ""; TimerColor = Brushes.Gray; LocalTimeText = ""; }
+
+            if (diff.TotalHours >= 1)
+                TimerText = $"{diff.Hours}h {diff.Minutes}m";
+            else if (diff.TotalSeconds > 0)
+                TimerText = $"{diff.Minutes:D2}:{diff.Seconds:D2}";
+            else
+                TimerText = "00:00";
         }
+
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
-
-    public class ApiResult { public List<EventData>? data { get; set; } }
-    public class EventData { public string? name { get; set; } public string? map { get; set; } public List<TimeSlot>? times { get; set; } }
-    public class TimeSlot { public string? start { get; set; } public string? end { get; set; } }
 }

@@ -200,6 +200,24 @@
             </StackPanel>
         </Border>
 
+        <Button x:Name="PatchNotesBtn" Content="View Patch Notes" Click="PatchNotes_Click" 
+                HorizontalAlignment="Left" MinWidth="120" Height="25" 
+                Background="Transparent" Foreground="#ff5500" BorderBrush="#ff5500" BorderThickness="1"
+                Margin="0,0,0,15" Cursor="Hand" FontSize="11">
+            <Button.Template>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="3">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="border" Property="Background" Value="#333"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Button.Template>
+        </Button>
+
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button x:Name="CancelBtn" Content="Cancel" Click="Cancel_Click" MinWidth="80" Width="Auto" Height="30" Padding="15,0" Background="#333" Foreground="White" Margin="0,0,10,0" Cursor="Hand"/>
             <Button x:Name="SaveBtn" Content="Save" Click="Save_Click" MinWidth="80" Width="Auto" Height="30" Padding="15,0" Background="#ff5500" Foreground="Black" FontWeight="Bold" Cursor="Hand"/>

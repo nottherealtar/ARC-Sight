@@ -28,17 +28,15 @@ namespace ARC_Sight
             TitleBlock.Text = MainWindow.GetTrans("header", "SETTINGS");
             HotkeyLabel.Text = MainWindow.GetTrans("hotkey_label", "SETTINGS");
             AlertLabel.Text = MainWindow.GetTrans("alert_minutes_label", "SETTINGS");
-
             LangLabel.Text = MainWindow.GetTrans("language_label", "SETTINGS");
-
             SoundCheck.Content = MainWindow.GetTrans("sound_toggle", "SETTINGS");
             TimeCheck.Content = MainWindow.GetTrans("show_local_time", "SETTINGS");
-
             SaveBtn.Content = MainWindow.GetTrans("save_button", "SETTINGS");
-
             CancelBtn.Content = MainWindow.GetTrans("cancel_button", "SETTINGS");
-
             AboutHeader.Text = MainWindow.GetTrans("about_header", "SETTINGS");
+
+            PatchNotesBtn.Content = MainWindow.GetTrans("patch_notes_button", "SETTINGS");
+            if (string.IsNullOrEmpty(PatchNotesBtn.Content?.ToString())) PatchNotesBtn.Content = "View Patch Notes";
 
             string createdTxt = MainWindow.GetTrans("created_by", "SETTINGS");
             CreatedBy.Text = createdTxt.Replace("**{author}**", "rodafux").Replace("{author}", "rodafux");
@@ -82,6 +80,15 @@ namespace ARC_Sight
             HotkeyBox.Text = k.ToString();
         }
 
+        private async void PatchNotes_Click(object sender, RoutedEventArgs e)
+        {
+
+            if (Application.Current.MainWindow is MainWindow mw)
+            {
+                await mw.FetchAndShowChangelogData(MainWindow.AppVersion);
+            }
+        }
+
         private void Save_Click(object sender, RoutedEventArgs e)
         {
             MainWindow.Hotkey = HotkeyBox.Text;
@@ -92,19 +99,7 @@ namespace ARC_Sight
             if (LangCombo.SelectedItem is ComboBoxItem item)
                 MainWindow.CurrentLanguage = item.Tag?.ToString() ?? "en";
 
-            try
-            {
-                Directory.CreateDirectory(MainWindow.AppDataPath);
-                string[] lines = {
-                    $"hotkey={MainWindow.Hotkey}",
-                    $"notify_minutes={MainWindow.NotifySeconds/60}",
-                    $"language={MainWindow.CurrentLanguage}",
-                    $"sound_enabled={MainWindow.SoundEnabled}",
-                    $"show_local_time={MainWindow.ShowLocalTime}"
-                };
-                File.WriteAllLines(MainWindow.ConfigFile, lines);
-            }
-            catch { }
+            MainWindow.SaveConfig();
 
             MainWindow.LoadLanguage();
             this.DialogResult = true;
