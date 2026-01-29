@@ -24,7 +24,7 @@ namespace ARC_Sight
 {
     public partial class MainWindow : Window
     {
-        public static string AppVersion { get; } = "1.3.1";
+        public static string AppVersion { get; } = "1.3.2";
 
         private const string NOTE_URL = "https://raw.githubusercontent.com/rodafux/ARC-Sight/refs/heads/Default/msg.ini";
         private const string API_URL = "https://metaforge.app/api/arc-raiders/events-schedule";
@@ -474,8 +474,14 @@ namespace ARC_Sight
         public static string GetTrans(string key, string section)
         {
             if (string.IsNullOrEmpty(key)) return "";
-            string k = key.Replace(" ", "_").ToLower();
-            return Translations.ContainsKey(k) ? Translations[k] : key.ToUpper();
+
+            string k = key.Replace(" ", "_").ToLower().Trim();
+
+            if (Translations.ContainsKey(k))
+            {
+                return Translations[k];
+            }
+            return key.ToUpper();
         }
 
         private void LoadConfig()
@@ -512,15 +518,37 @@ namespace ARC_Sight
             catch { }
         }
 
+        public static string CurrentLanguageAuthor { get; set; } = "Unknown";
+
         public static void LoadLanguage()
         {
             Translations.Clear();
+            CurrentLanguageAuthor = "Unknown";
+
             string path = Path.Combine(LanguagesDir, $"lang_{CurrentLanguage}.ini");
             if (!File.Exists(path)) path = Path.Combine(LanguagesDir, "lang_en.ini");
+
             if (File.Exists(path))
             {
                 foreach (var line in File.ReadAllLines(path))
-                    if (line.Contains("=")) { var p = line.Split(new[] { '=' }, 2); if (p.Length > 1) Translations[p[0].Trim().ToLower()] = p[1].Trim(); }
+                {
+                    if (line.Contains("="))
+                    {
+                        var p = line.Split(new[] { '=' }, 2);
+                        if (p.Length > 1)
+                        {
+                            string key = p[0].Trim().ToLower();
+                            string value = p[1].Trim();
+
+                            if (key == "author")
+                            {
+                                CurrentLanguageAuthor = value;
+                            }
+
+                            Translations[key] = value;
+                        }
+                    }
+                }
             }
         }
 
@@ -692,12 +720,11 @@ namespace ARC_Sight
 
             AlertVisibility = IsActive ? Visibility.Collapsed : Visibility.Visible;
 
-            string lang = MainWindow.CurrentLanguage;
-            string startTxt = "STARTS IN"; string endTxt = "ENDS IN";
-            if (lang == "fr") { startTxt = "DÉBUT DANS"; endTxt = "FIN DANS"; }
-            else if (lang == "de") { startTxt = "START IN"; endTxt = "ENDET IN"; }
-            else if (lang == "es") { startTxt = "INICIA EN"; endTxt = "TERMINA EN"; }
-            else if (lang == "it") { startTxt = "INIZIA TRA"; endTxt = "TERMINA TRA"; }
+            string startTxt = MainWindow.GetTrans("timer_start_prefix", "UI");
+            string endTxt = MainWindow.GetTrans("timer_end_prefix", "UI");
+
+            if (startTxt == "TIMER_START_PREFIX") startTxt = "STARTS IN";
+            if (endTxt == "TIMER_END_PREFIX") endTxt = "ENDS IN";
 
             TimeSpan diff;
 
@@ -730,11 +757,16 @@ namespace ARC_Sight
                 {
                     TimerColor = Brushes.Yellow;
                     BorderColor = Brushes.Yellow;
+
                     if (IsAlertEnabled && !HasNotified)
                     {
                         string msgPattern = MainWindow.GetTrans("notify_message", "UI");
-                        if (string.IsNullOrEmpty(msgPattern)) msgPattern = "STARTING IN {minutes} MIN - {map_name}";
-                        string msg = msgPattern.Replace("{minutes}", ((int)diff.TotalMinutes).ToString()).Replace("{map_name}", Map);
+                        if (string.IsNullOrEmpty(msgPattern) || msgPattern == "NOTIFY_MESSAGE")
+                            msgPattern = "STARTING IN {minutes} MIN - {map_name}";
+
+                        string msg = msgPattern.Replace("{minutes}", ((int)diff.TotalMinutes).ToString())
+                                               .Replace("{map_name}", Map);
+
                         RequestNotification?.Invoke(Title, msg);
                         HasNotified = true;
                     }
@@ -748,7 +780,7 @@ namespace ARC_Sight
             }
 
             if (diff.TotalHours >= 1)
-                TimerText = $"{diff.Hours}h {diff.Minutes}m";
+                TimerText = $"{(int)diff.TotalHours}h {diff.Minutes}m";
             else if (diff.TotalSeconds > 0)
                 TimerText = $"{diff.Minutes:D2}:{diff.Seconds:D2}";
             else

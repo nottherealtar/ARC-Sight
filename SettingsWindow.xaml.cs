@@ -39,7 +39,12 @@ namespace ARC_Sight
             if (string.IsNullOrEmpty(PatchNotesBtn.Content?.ToString())) PatchNotesBtn.Content = "View Patch Notes";
 
             string createdTxt = MainWindow.GetTrans("created_by", "SETTINGS");
-            CreatedBy.Text = createdTxt.Replace("**{author}**", "rodafux").Replace("{author}", "rodafux");
+            string appAuthor = createdTxt.Replace("**{author}**", "rodafux").Replace("{author}", "rodafux");
+
+            string transByLabel = MainWindow.GetTrans("translated_by", "SETTINGS");
+            if (string.IsNullOrEmpty(transByLabel) || transByLabel == "TRANSLATED_BY") transByLabel = "Translated by:";
+
+            CreatedBy.Text = $"{appAuthor}\n{transByLabel} {MainWindow.CurrentLanguageAuthor}";
 
             string versionTxt = MainWindow.GetTrans("current_version", "SETTINGS");
             CurrentVersion.Text = versionTxt.Replace("{version}", MainWindow.AppVersion);
