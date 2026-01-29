@@ -1,6 +1,6 @@
 #ARC-Sight
 
-![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![Version](https://img.shields.io/badge/version-1.3.2-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
 <img width="1919" height="1062" alt="Capture d&#39;écran 2025-12-13 051941" src="https://github.com/user-attachments/assets/f1e28032-c291-4760-bbaf-e74321e29fa2" /><br><br>
@@ -22,6 +22,7 @@
     * 🇩🇪 Deutsch
     * 🇪🇸 Español
     * 🇮🇹 Italiano
+    * 🇷🇺 Русский
 * **Safe to Use:** 100% external tool. It does not inject code into the game or read game memory.
 
 ## 📥 Installation
