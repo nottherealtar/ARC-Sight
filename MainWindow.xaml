@@ -184,6 +184,8 @@
 
                     <TextBlock x:Name="ApiHealthText" Text="API: waiting..." Foreground="#888" VerticalAlignment="Center" Margin="15,0,0,0" FontSize="12" FontWeight="SemiBold"/>
 
+                    <TextBlock x:Name="RecommendationText" Text="Do now: waiting for schedule..." Foreground="#00e5ff" VerticalAlignment="Center" Margin="15,0,0,0" FontSize="12" FontWeight="SemiBold" MaxWidth="360" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+
                     <TextBlock x:Name="NoteText" Text="" Foreground="#ff5500" FontWeight="Bold" VerticalAlignment="Center" Margin="20,0,0,0" FontSize="12"/>
                 </StackPanel>
 
@@ -349,6 +351,7 @@
                                                         <RowDefinition Height="*"/>
                                                         <RowDefinition Height="Auto"/>
                                                         <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
                                                     </Grid.RowDefinitions>
 
                                                     <TextBlock Grid.Row="0" Text="{Binding Title}" Foreground="#00e5ff" FontWeight="Bold" FontSize="20" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"/>
@@ -361,7 +364,9 @@
 
                                                     <TextBlock Grid.Row="2" Text="{Binding Map}" Foreground="#eeeeee" FontWeight="SemiBold" FontSize="16" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="0,0,0,10"/>
 
-                                                    <CheckBox Grid.Row="3" IsChecked="{Binding IsAlertEnabled}" Visibility="{Binding AlertVisibility}" Content="{Binding AlertLabel}" Style="{StaticResource AlertCheckBox}" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Row="3" Text="{Binding BlueprintHint}" Foreground="#aaa" FontSize="11" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="0,0,0,8"/>
+
+                                                    <CheckBox Grid.Row="4" IsChecked="{Binding IsAlertEnabled}" Visibility="{Binding AlertVisibility}" Content="{Binding AlertLabel}" Style="{StaticResource AlertCheckBox}" HorizontalAlignment="Right"/>
                                                 </Grid>
                                             </Grid>
                                         </Border>

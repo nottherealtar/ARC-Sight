@@ -214,6 +214,12 @@
         <ComboBox x:Name="LangCombo">
         </ComboBox>
 
+        <TextBlock x:Name="FavoriteMapLabel" Text="Favorite Map" Foreground="#888" Margin="0,15,0,5"/>
+        <ComboBox x:Name="FavoriteMapCombo"/>
+
+        <TextBlock x:Name="FavoriteEventLabel" Text="Favorite Event" Foreground="#888" Margin="0,15,0,5"/>
+        <ComboBox x:Name="FavoriteEventCombo"/>
+
         <Border BorderBrush="#333" BorderThickness="0,1,0,0" Margin="0,20,0,15" Padding="0,15,0,0">
             <StackPanel>
                 <TextBlock x:Name="AboutHeader" Text="À PROPOS" Foreground="White" FontWeight="Bold" Margin="0,0,0,5"/>

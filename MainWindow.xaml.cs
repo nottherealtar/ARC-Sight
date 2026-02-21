@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -65,6 +66,7 @@ namespace ARC_Sight
         private ComboBox? PlannerSortComboRef => FindName("PlannerSortCombo") as ComboBox;
         private TextBlock? StatusTextRef => FindName("StatusText") as TextBlock;
         private TextBlock? ApiHealthTextRef => FindName("ApiHealthText") as TextBlock;
+        private TextBlock? RecommendationTextRef => FindName("RecommendationText") as TextBlock;
         private TextBlock? NoteTextRef => FindName("NoteText") as TextBlock;
         private Button? LockBtnRef => FindName("LockBtn") as Button;
         private Grid? LoadingPanelRef => FindName("LoadingPanel") as Grid;
@@ -82,6 +84,10 @@ namespace ARC_Sight
         public static string LastSeenVersion { get; set; } = "v0.0.0";
         public static string DiscordWebhookUrl { get; set; } = "";
         public static bool DiscordWebhookEnabled { get; set; } = false;
+        public static string FavoriteMap { get; set; } = "";
+        public static string FavoriteEvent { get; set; } = "";
+
+        private static readonly string[] MapTabOrder = { "dam", "spaceport", "buried_city", "blue_gate", "stella_montis" };
 
         public static readonly Dictionary<string, string> Translations = new Dictionary<string, string>();
 
@@ -466,6 +472,10 @@ namespace ARC_Sight
             string tooltip = GetTrans("lock_tooltip", "UI");
             if (string.IsNullOrEmpty(tooltip)) tooltip = "Lock / Unlock window position";
             if (LockBtnRef != null) LockBtnRef.ToolTip = tooltip;
+            if (RecommendationTextRef != null && string.IsNullOrWhiteSpace(RecommendationTextRef.Text))
+            {
+                RecommendationTextRef.Text = GetRecommendationWaitingText();
+            }
         }
 
         private void ListBox_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -667,15 +677,35 @@ namespace ARC_Sight
             MergeCards(allTab.Cards, data);
             ApplyPlannerSort(allTab);
 
-            var grouped = data.GroupBy(e => e.Raw.name).OrderBy(g => g.Key);
-            foreach (var group in grouped)
+            var desiredHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ALL" };
+
+            foreach (var mapKey in MapTabOrder)
             {
-                string tabName = GetTrans(group.Key ?? "Unknown", "TABS");
+                string tabName = GetTrans(mapKey, "MAPS");
+                if (string.IsNullOrWhiteSpace(tabName) || tabName == mapKey.ToUpper()) tabName = mapKey;
+                desiredHeaders.Add(tabName);
+
                 var tab = Tabs.FirstOrDefault(t => t.Header == tabName);
-                if (tab == null) { tab = new TabViewModel(tabName); Tabs.Add(tab); }
-                MergeCards(tab.Cards, group.ToList());
+                if (tab == null)
+                {
+                    tab = new TabViewModel(tabName);
+                    Tabs.Add(tab);
+                }
+
+                var mappedEvents = data.Where(e => GetCanonicalMapKey(e.Raw.map) == mapKey).ToList();
+                MergeCards(tab.Cards, mappedEvents);
                 ApplyPlannerSort(tab);
             }
+
+            for (int i = Tabs.Count - 1; i >= 0; i--)
+            {
+                if (!desiredHeaders.Contains(Tabs[i].Header))
+                {
+                    Tabs.RemoveAt(i);
+                }
+            }
+
+            UpdateRecommendationText();
         }
 
         private void PlannerSortCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -698,6 +728,13 @@ namespace ARC_Sight
         private void ApplyPlannerSort(TabViewModel tab)
         {
             if (tab?.SortedCards == null) return;
+
+            if (tab.SortedCards is ListCollectionView listView)
+            {
+                listView.CustomSort = new CardPriorityComparer(_plannerSortMode);
+                listView.Refresh();
+                return;
+            }
 
             tab.SortedCards.SortDescriptions.Clear();
 
@@ -758,6 +795,90 @@ namespace ARC_Sight
         private void UpdateAllTimers()
         {
             foreach (var tab in Tabs) foreach (var card in tab.Cards) card.UpdateTimer();
+            UpdateRecommendationText();
+        }
+
+        public static string GetCanonicalMapKey(string? rawMap)
+        {
+            string map = (rawMap ?? "").Trim().ToLowerInvariant();
+            if (map.Contains("dam")) return "dam";
+            if (map.Contains("spaceport")) return "spaceport";
+            if (map.Contains("buried")) return "buried_city";
+            if (map.Contains("gate")) return "blue_gate";
+            if (map.Contains("stella")) return "stella_montis";
+            return map;
+        }
+
+        private static string NormalizeEventKey(string? eventName)
+        {
+            if (string.IsNullOrWhiteSpace(eventName)) return "";
+            return eventName.Trim().Replace(" ", "_").ToUpperInvariant();
+        }
+
+        private void UpdateRecommendationText()
+        {
+            if (RecommendationTextRef == null) return;
+
+            var card = GetRecommendedCard();
+            if (card == null)
+            {
+                RecommendationTextRef.Text = GetRecommendationWaitingText();
+                RecommendationTextRef.Foreground = Brushes.Gray;
+                return;
+            }
+
+            long nowUnix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (card.IsActive)
+            {
+                string liveTpl = GetTrans("recommendation_live", "UI");
+                if (string.IsNullOrWhiteSpace(liveTpl) || liveTpl == "RECOMMENDATION_LIVE")
+                    liveTpl = "Do now: run {map} • {event} (live)";
+
+                RecommendationTextRef.Text = liveTpl
+                    .Replace("{map}", card.Map)
+                    .Replace("{event}", card.Title);
+                RecommendationTextRef.Foreground = Brushes.LightGreen;
+                return;
+            }
+
+            int minutes = Math.Max(1, (int)Math.Ceiling((card.RawData.startTime - nowUnix) / 60000.0));
+            string actionNow = GetTrans("recommendation_rotate_now", "UI");
+            if (string.IsNullOrWhiteSpace(actionNow) || actionNow == "RECOMMENDATION_ROTATE_NOW") actionNow = "rotate now";
+
+            string actionInTpl = GetTrans("recommendation_rotate_in", "UI");
+            if (string.IsNullOrWhiteSpace(actionInTpl) || actionInTpl == "RECOMMENDATION_ROTATE_IN") actionInTpl = "rotate in {minutes}m";
+
+            string action = minutes <= 6 ? actionNow : actionInTpl.Replace("{minutes}", minutes.ToString());
+
+            string upcomingTpl = GetTrans("recommendation_upcoming", "UI");
+            if (string.IsNullOrWhiteSpace(upcomingTpl) || upcomingTpl == "RECOMMENDATION_UPCOMING")
+                upcomingTpl = "Do now: {map} • {event} ({action})";
+
+            RecommendationTextRef.Text = upcomingTpl
+                .Replace("{map}", card.Map)
+                .Replace("{event}", card.Title)
+                .Replace("{action}", action);
+            RecommendationTextRef.Foreground = minutes <= 6 ? Brushes.Gold : Brushes.DeepSkyBlue;
+        }
+
+        private static string GetRecommendationWaitingText()
+        {
+            string waiting = GetTrans("recommendation_waiting", "UI");
+            if (string.IsNullOrWhiteSpace(waiting) || waiting == "RECOMMENDATION_WAITING")
+                waiting = "Do now: waiting for schedule...";
+            return waiting;
+        }
+
+        private CardViewModel? GetRecommendedCard()
+        {
+            var allTab = Tabs.FirstOrDefault(t => t.Header == "ALL");
+            if (allTab == null || allTab.Cards.Count == 0) return null;
+
+            var sorted = allTab.Cards
+                .OrderBy(c => c, new CardPriorityComparer("active"))
+                .ToList();
+
+            return sorted.FirstOrDefault();
         }
 
         public static string GetTrans(string key, string section)
@@ -789,6 +910,8 @@ namespace ARC_Sight
                     if (key == "last_seen_version") LastSeenVersion = value;
                     if (key == "discord_webhook_url") DiscordWebhookUrl = value;
                     if (key == "discord_webhook_enabled" && bool.TryParse(value, out bool dwe)) DiscordWebhookEnabled = dwe;
+                    if (key == "favorite_map") FavoriteMap = value;
+                    if (key == "favorite_event") FavoriteEvent = value;
                 }
             }
         }
@@ -806,7 +929,9 @@ namespace ARC_Sight
                     $"show_local_time={ShowLocalTime}",
                     $"last_seen_version={LastSeenVersion}",
                     $"discord_webhook_enabled={DiscordWebhookEnabled}",
-                    $"discord_webhook_url={DiscordWebhookUrl}"
+                    $"discord_webhook_url={DiscordWebhookUrl}",
+                    $"favorite_map={FavoriteMap}",
+                    $"favorite_event={FavoriteEvent}"
                 };
                 File.WriteAllLines(ConfigFile, lines);
             }
@@ -1098,6 +1223,15 @@ namespace ARC_Sight
         public string Map => MainWindow.GetTrans(RawData.map ?? "", "MAPS");
         public string MapSortKey => RawData.map ?? "";
         public string AlertLabel => MainWindow.GetTrans("alert_button_label", "UI");
+        public string BlueprintHint
+        {
+            get
+            {
+                string tpl = MainWindow.GetTrans("blueprint_target_label", "UI");
+                if (string.IsNullOrWhiteSpace(tpl) || tpl == "BLUEPRINT_TARGET_LABEL") tpl = "Target Blueprint: {event}";
+                return tpl.Replace("{event}", Title);
+            }
+        }
         public ImageSource? BackgroundImage { get; private set; }
 
         private bool _isActive = false;
@@ -1145,13 +1279,16 @@ namespace ARC_Sight
 
         public void UpdateData(ScheduleEvent newData)
         {
-            if (RawData.startTime != newData.startTime || RawData.endTime != newData.endTime)
+            if (RawData.startTime != newData.startTime || RawData.endTime != newData.endTime ||
+                RawData.name != newData.name || RawData.map != newData.map || RawData.icon != newData.icon)
             {
                 RawData = newData;
                 HasNotified = false;
                 UpdateTimer();
                 OnPropertyChanged(nameof(Title));
                 OnPropertyChanged(nameof(Map));
+                OnPropertyChanged(nameof(MapSortKey));
+                OnPropertyChanged(nameof(BlueprintHint));
             }
         }
 
@@ -1306,6 +1443,88 @@ namespace ARC_Sight
             {
                 scrollViewer.ScrollToHorizontalOffset((double)e.NewValue);
             }
+        }
+    }
+
+    public sealed class CardPriorityComparer : IComparer, IComparer<CardViewModel>
+    {
+        private readonly string _sortMode;
+
+        public CardPriorityComparer(string sortMode)
+        {
+            _sortMode = sortMode;
+        }
+
+        public int Compare(CardViewModel? a, CardViewModel? b)
+        {
+            if (a == null || b == null) return 0;
+
+            if (a.IsActive != b.IsActive)
+            {
+                return b.IsActive.CompareTo(a.IsActive);
+            }
+
+            long nowUnix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long aStart = a.RawData.startTime;
+            long bStart = b.RawData.startTime;
+            long deltaSeconds = Math.Abs((aStart - bStart) / 1000);
+
+            if (!a.IsActive && !b.IsActive && deltaSeconds <= 300)
+            {
+                int pref = ComparePreference(a, b);
+                if (pref != 0) return pref;
+            }
+
+            if (_sortMode == "map")
+            {
+                int mapCmp = string.Compare(a.MapSortKey, b.MapSortKey, StringComparison.OrdinalIgnoreCase);
+                if (mapCmp != 0) return mapCmp;
+            }
+
+            if (_sortMode == "soonest")
+            {
+                int soonest = a.TargetTime.CompareTo(b.TargetTime);
+                if (soonest != 0) return soonest;
+            }
+            else
+            {
+                int target = a.TargetTime.CompareTo(b.TargetTime);
+                if (target != 0) return target;
+            }
+
+            return string.Compare(a.Title, b.Title, StringComparison.OrdinalIgnoreCase);
+        }
+
+        int IComparer.Compare(object? x, object? y)
+        {
+            return Compare(x as CardViewModel, y as CardViewModel);
+        }
+
+        private static int ComparePreference(CardViewModel a, CardViewModel b)
+        {
+            int aScore = GetPreferenceScore(a);
+            int bScore = GetPreferenceScore(b);
+            return bScore.CompareTo(aScore);
+        }
+
+        private static int GetPreferenceScore(CardViewModel card)
+        {
+            int score = 0;
+
+            if (!string.IsNullOrWhiteSpace(MainWindow.FavoriteMap))
+            {
+                if (string.Equals(MainWindow.GetCanonicalMapKey(card.RawData.map), MainWindow.FavoriteMap, StringComparison.OrdinalIgnoreCase))
+                    score += 1;
+            }
+
+            if (!string.IsNullOrWhiteSpace(MainWindow.FavoriteEvent))
+            {
+                string key = (card.RawData.name ?? "").Trim().Replace(" ", "_").ToUpperInvariant();
+                if (string.Equals(key, MainWindow.FavoriteEvent, StringComparison.OrdinalIgnoreCase))
+                    score += 1;
+            }
+
+            return score;
         }
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -9,6 +10,24 @@ namespace ARC_Sight
 {
     public partial class SettingsWindow : Window
     {
+        private static readonly string[] EventPreferenceKeys =
+        {
+            "ELECTROMAGNETIC_STORM",
+            "HARVESTER",
+            "HUSK_GRAVEYARD",
+            "HIDDEN_BUNKER",
+            "NIGHT_RAID",
+            "UNCOVERED_CACHES",
+            "SUPPLY_DROP",
+            "LAUNCH_TOWER_LOOT",
+            "LUSH_BLOOMS",
+            "MATRIARCH",
+            "PROSPECTING_PROBES",
+            "COLD_SNAP",
+            "LOCKED_GATE",
+            "BIRD_CITY"
+        };
+
         public SettingsWindow()
         {
             InitializeComponent();
@@ -22,6 +41,7 @@ namespace ARC_Sight
             WebhookUrlBox.Text = MainWindow.DiscordWebhookUrl;
 
             LoadLanguages();
+            LoadPreferenceOptions();
             ApplyTranslations();
         }
 
@@ -31,6 +51,8 @@ namespace ARC_Sight
             HotkeyLabel.Text = MainWindow.GetTrans("hotkey_label", "SETTINGS");
             AlertLabel.Text = MainWindow.GetTrans("alert_minutes_label", "SETTINGS");
             LangLabel.Text = MainWindow.GetTrans("language_label", "SETTINGS");
+            FavoriteMapLabel.Text = MainWindow.GetTrans("favorite_map_label", "SETTINGS");
+            FavoriteEventLabel.Text = MainWindow.GetTrans("favorite_event_label", "SETTINGS");
             SoundCheck.Content = MainWindow.GetTrans("sound_toggle", "SETTINGS");
             TimeCheck.Content = MainWindow.GetTrans("show_local_time", "SETTINGS");
             WebhookEnabledCheck.Content = MainWindow.GetTrans("discord_webhook_toggle", "SETTINGS");
@@ -55,6 +77,16 @@ namespace ARC_Sight
                 TestWebhookBtn.Content?.ToString() == "DISCORD_WEBHOOK_TEST")
             {
                 TestWebhookBtn.Content = "Test Webhook";
+            }
+
+            if (string.IsNullOrWhiteSpace(FavoriteMapLabel.Text) || FavoriteMapLabel.Text == "FAVORITE_MAP_LABEL")
+            {
+                FavoriteMapLabel.Text = "Favorite Map";
+            }
+
+            if (string.IsNullOrWhiteSpace(FavoriteEventLabel.Text) || FavoriteEventLabel.Text == "FAVORITE_EVENT_LABEL")
+            {
+                FavoriteEventLabel.Text = "Favorite Event";
             }
 
             PatchNotesBtn.Content = MainWindow.GetTrans("patch_notes_button", "SETTINGS");
@@ -97,6 +129,57 @@ namespace ARC_Sight
                     if (code == MainWindow.CurrentLanguage) item.IsSelected = true;
                 }
             }
+        }
+
+        private void LoadPreferenceOptions()
+        {
+            FavoriteMapCombo.Items.Clear();
+            FavoriteEventCombo.Items.Clear();
+
+            string anyLabel = MainWindow.GetTrans("any_option", "SETTINGS");
+            if (string.IsNullOrWhiteSpace(anyLabel) || anyLabel == "ANY_OPTION") anyLabel = "Any";
+
+            FavoriteMapCombo.Items.Add(new ComboBoxItem { Content = anyLabel, Tag = "" });
+
+            var mapOptions = new[]
+            {
+                new { Key = "dam", Value = MainWindow.GetTrans("dam", "MAPS") },
+                new { Key = "spaceport", Value = MainWindow.GetTrans("spaceport", "MAPS") },
+                new { Key = "buried_city", Value = MainWindow.GetTrans("buried_city", "MAPS") },
+                new { Key = "blue_gate", Value = MainWindow.GetTrans("blue_gate", "MAPS") },
+                new { Key = "stella_montis", Value = MainWindow.GetTrans("stella_montis", "MAPS") }
+            };
+
+            foreach (var map in mapOptions)
+            {
+                string label = string.IsNullOrWhiteSpace(map.Value) || map.Value == map.Key.ToUpper() ? map.Key : map.Value;
+                FavoriteMapCombo.Items.Add(new ComboBoxItem { Content = label, Tag = map.Key });
+            }
+
+            FavoriteEventCombo.Items.Add(new ComboBoxItem { Content = anyLabel, Tag = "" });
+            foreach (var eventKey in EventPreferenceKeys)
+            {
+                string label = MainWindow.GetTrans(eventKey, "TABS");
+                if (string.IsNullOrWhiteSpace(label) || label == eventKey.ToUpper()) label = eventKey.Replace("_", " ");
+                FavoriteEventCombo.Items.Add(new ComboBoxItem { Content = label, Tag = eventKey });
+            }
+
+            SelectComboByTag(FavoriteMapCombo, MainWindow.FavoriteMap);
+            SelectComboByTag(FavoriteEventCombo, MainWindow.FavoriteEvent);
+        }
+
+        private static void SelectComboByTag(ComboBox combo, string targetTag)
+        {
+            foreach (var item in combo.Items.OfType<ComboBoxItem>())
+            {
+                if (string.Equals(item.Tag?.ToString() ?? "", targetTag ?? "", StringComparison.OrdinalIgnoreCase))
+                {
+                    combo.SelectedItem = item;
+                    return;
+                }
+            }
+
+            combo.SelectedIndex = 0;
         }
 
         private void HotkeyBox_KeyDown(object sender, KeyEventArgs e)
@@ -154,6 +237,8 @@ namespace ARC_Sight
             MainWindow.ShowLocalTime = TimeCheck.IsChecked ?? false;
             MainWindow.DiscordWebhookEnabled = WebhookEnabledCheck.IsChecked ?? false;
             MainWindow.DiscordWebhookUrl = WebhookUrlBox.Text.Trim();
+            MainWindow.FavoriteMap = (FavoriteMapCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "";
+            MainWindow.FavoriteEvent = (FavoriteEventCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "";
 
             if (LangCombo.SelectedItem is ComboBoxItem item)
                 MainWindow.CurrentLanguage = item.Tag?.ToString() ?? "en";
