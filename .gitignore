@@ -12,6 +12,7 @@ Generated\ Files/
 [Rr]eleases/
 Release/
 Debug/
+.claude/
 
 # === Fichiers utilisateur et cache ===
 *.user
@@ -21,6 +22,7 @@ Debug/
 *.userprefs
 *.db
 *.opendb
+*.claude
 
 # === Archives et fichiers de packaging ===
 # Pour éviter d'envoyer les backups ou les raretés locales

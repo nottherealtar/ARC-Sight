@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -36,17 +37,38 @@ namespace ARC_Sight
         public static string ConfigFile { get; } = Path.Combine(AppDataPath, "config.ini");
         public static string LanguagesDir { get; } = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "languages");
 
-        private readonly HttpClient _client = new HttpClient();
+        private readonly HttpClient _client = new HttpClient()
+        {
+            DefaultRequestHeaders = { { "User-Agent", "ARC-Sight/1.0" } }
+        };
         private DispatcherTimer? _uiTimer;
         private DispatcherTimer? _apiTimer;
         private IntPtr _windowHandle;
+        private DateTime? _lastSuccessfulFetchUtc;
+        private bool _lastFetchHadError = false;
+        private bool _isFetchInProgress = false;
+        private const int ApiStaleSeconds = 90;
 
         private static MediaPlayer _mediaPlayer = new MediaPlayer();
+        private static readonly HttpClient _webhookClient = new HttpClient()
+        {
+            DefaultRequestHeaders = { { "User-Agent", "ARC-Sight/1.0" } }
+        };
         private Velopack.UpdateInfo? _updateInfo;
         private bool _isWindowLocked = true;
 
         private bool _isDragging = false;
         private Point _dragOffset;
+        private string _plannerSortMode = "active";
+
+        private TabControl? MainTabControlRef => FindName("MainTabControl") as TabControl;
+        private ComboBox? PlannerSortComboRef => FindName("PlannerSortCombo") as ComboBox;
+        private TextBlock? StatusTextRef => FindName("StatusText") as TextBlock;
+        private TextBlock? ApiHealthTextRef => FindName("ApiHealthText") as TextBlock;
+        private TextBlock? NoteTextRef => FindName("NoteText") as TextBlock;
+        private Button? LockBtnRef => FindName("LockBtn") as Button;
+        private Grid? LoadingPanelRef => FindName("LoadingPanel") as Grid;
+        private Hardcodet.Wpf.TaskbarNotification.TaskbarIcon? TrayIconRef => FindName("TrayIcon") as Hardcodet.Wpf.TaskbarNotification.TaskbarIcon;
 
         public ObservableCollection<TabViewModel> Tabs { get; set; } = new ObservableCollection<TabViewModel>();
 
@@ -58,24 +80,45 @@ namespace ARC_Sight
         public static bool ShowLocalTime { get; set; } = false;
         public static string CurrentLanguage { get; set; } = "en";
         public static string LastSeenVersion { get; set; } = "v0.0.0";
+        public static string DiscordWebhookUrl { get; set; } = "";
+        public static bool DiscordWebhookEnabled { get; set; } = false;
 
         public static readonly Dictionary<string, string> Translations = new Dictionary<string, string>();
 
         public MainWindow()
         {
-            InitializeComponent();
+            Application.LoadComponent(this, new Uri("MainWindow.xaml", UriKind.Relative));
             LoadConfig();
             LoadLanguage();
             LoadSoundFile();
             LoadLogoSafe();
+            LoadTrayIcon();
 
             this.DataContext = this;
 
-            MainTabControl.ItemsSource = Tabs;
+            if (MainTabControlRef != null) MainTabControlRef.ItemsSource = Tabs;
             this.Loaded += MainWindow_Loaded;
 
             this.MouseMove += MainWindow_MouseMove;
             this.MouseLeftButtonUp += MainWindow_MouseLeftButtonUp;
+
+            if (PlannerSortComboRef?.SelectedItem is ComboBoxItem selected)
+            {
+                _plannerSortMode = selected.Tag?.ToString() ?? "active";
+            }
+        }
+
+        private void LoadTrayIcon()
+        {
+            try
+            {
+                string iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "logo.ico");
+                if (File.Exists(iconPath))
+                {
+                    if (TrayIconRef != null) TrayIconRef.Icon = new System.Drawing.Icon(iconPath);
+                }
+            }
+            catch { }
         }
 
         private void LoadLogoSafe()
@@ -170,16 +213,19 @@ namespace ARC_Sight
                     {
                         string header = GetTrans("note_header", "UI");
                         if (string.IsNullOrEmpty(header)) header = "NOTE IMPORTANTE :";
-                        NoteText.Text = $"{header} {message}";
-                        NoteText.Visibility = Visibility.Visible;
+                        if (NoteTextRef != null)
+                        {
+                            NoteTextRef.Text = $"{header} {message}";
+                            NoteTextRef.Visibility = Visibility.Visible;
+                        }
                     }
                     else
                     {
-                        NoteText.Visibility = Visibility.Collapsed;
+                        if (NoteTextRef != null) NoteTextRef.Visibility = Visibility.Collapsed;
                     }
                 }
             }
-            catch { NoteText.Visibility = Visibility.Collapsed; }
+            catch { if (NoteTextRef != null) NoteTextRef.Visibility = Visibility.Collapsed; }
         }
 
         private async Task CheckForUpdates()
@@ -232,10 +278,106 @@ namespace ARC_Sight
 #endif
         }
 
-        public static void TriggerNotification(string title, string message)
+        public static void TriggerNotification(AlertNotification notification)
         {
+            string title = notification.Title;
+            string message = notification.Message;
+
             if (SoundEnabled) { try { _mediaPlayer.Stop(); _mediaPlayer.Play(); } catch { } }
             Application.Current.Dispatcher.Invoke(() => { try { new ToastWindow(title, message).Show(); } catch { } });
+
+            if (DiscordWebhookEnabled && !string.IsNullOrWhiteSpace(DiscordWebhookUrl))
+            {
+                _ = SendDiscordWebhookAsync(notification);
+            }
+        }
+
+        private static async Task SendDiscordWebhookAsync(AlertNotification notification)
+        {
+            try
+            {
+                if (!Uri.TryCreate(DiscordWebhookUrl.Trim(), UriKind.Absolute, out var webhookUri)) return;
+
+                var localStart = DateTimeOffset.FromUnixTimeMilliseconds(notification.RawEvent.startTime).LocalDateTime;
+                var utcStart = DateTimeOffset.FromUnixTimeMilliseconds(notification.RawEvent.startTime).UtcDateTime;
+
+                var fields = new object[]
+                {
+                    new { name = "Event", value = notification.EventName, inline = true },
+                    new { name = "Map", value = notification.MapName, inline = true },
+                    new { name = "Starts (Local)", value = localStart.ToString("yyyy-MM-dd HH:mm:ss"), inline = false },
+                    new { name = "Starts (UTC)", value = utcStart.ToString("yyyy-MM-dd HH:mm:ss"), inline = false }
+                };
+
+                var embed = new Dictionary<string, object?>
+                {
+                    ["title"] = notification.Title,
+                    ["description"] = notification.Message,
+                    ["color"] = 0xFF5500,
+                    ["timestamp"] = DateTimeOffset.UtcNow.ToString("O"),
+                    ["fields"] = fields,
+                    ["footer"] = new { text = "ARC-Sight Alert" }
+                };
+
+                if (!string.IsNullOrWhiteSpace(notification.ImageUrl) &&
+                    Uri.TryCreate(notification.ImageUrl, UriKind.Absolute, out _))
+                {
+                    embed["thumbnail"] = new { url = notification.ImageUrl };
+                }
+
+                var payload = new
+                {
+                    username = "ARC-Sight",
+                    embeds = new[] { embed }
+                };
+
+                var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions
+                {
+                    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+                });
+
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                await _webhookClient.PostAsync(webhookUri, content);
+            }
+            catch { }
+        }
+
+        public static async Task<bool> SendTestDiscordWebhookAsync(string webhookUrl)
+        {
+            try
+            {
+                if (!Uri.TryCreate(webhookUrl.Trim(), UriKind.Absolute, out var webhookUri)) return false;
+
+                var payload = new
+                {
+                    username = "ARC-Sight",
+                    embeds = new[]
+                    {
+                        new
+                        {
+                            title = "ARC-Sight Webhook Test",
+                            description = "Webhook is configured correctly.",
+                            color = 0xFF5500,
+                            timestamp = DateTimeOffset.UtcNow.ToString("O"),
+                            fields = new object[]
+                            {
+                                new { name = "Status", value = "Connected", inline = true },
+                                new { name = "App Version", value = AppVersion, inline = true }
+                            },
+                            footer = new { text = "ARC-Sight Test" }
+                        }
+                    }
+                };
+
+                var json = JsonSerializer.Serialize(payload);
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var response = await _webhookClient.PostAsync(webhookUri, content);
+                return response.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -252,7 +394,7 @@ namespace ARC_Sight
             RegisterHotKey(_windowHandle, 1, 0, GetVkCode(Hotkey));
 
             _uiTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-            _uiTimer.Tick += (s, ev) => UpdateAllTimers();
+            _uiTimer.Tick += (s, ev) => { UpdateAllTimers(); UpdateApiHealthIndicator(); };
             _uiTimer.Start();
 
             _apiTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
@@ -266,7 +408,7 @@ namespace ARC_Sight
 
         private async Task InitialLoad()
         {
-            StatusText.Text = "Loading...";
+            if (StatusTextRef != null) StatusTextRef.Text = "Loading...";
             await FetchData();
             await FetchNote();
             await CheckAndShowChangelog();
@@ -323,7 +465,7 @@ namespace ARC_Sight
         {
             string tooltip = GetTrans("lock_tooltip", "UI");
             if (string.IsNullOrEmpty(tooltip)) tooltip = "Lock / Unlock window position";
-            if (LockBtn != null) LockBtn.ToolTip = tooltip;
+            if (LockBtnRef != null) LockBtnRef.ToolTip = tooltip;
         }
 
         private void ListBox_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -333,10 +475,33 @@ namespace ARC_Sight
                 var scrollViewer = FindVisualChild<ScrollViewer>(listBox);
                 if (scrollViewer != null)
                 {
-                    for (int i = 0; i < 40; i++) { if (e.Delta > 0) scrollViewer.LineLeft(); else scrollViewer.LineRight(); }
+                    double scrollAmount = 200; // pixels per scroll
+                    double targetOffset = scrollViewer.HorizontalOffset + (e.Delta > 0 ? -scrollAmount : scrollAmount);
+                    targetOffset = Math.Max(0, Math.Min(targetOffset, scrollViewer.ScrollableWidth));
+
+                    // Animate smooth scrolling
+                    AnimateScroll(scrollViewer, targetOffset);
                     e.Handled = true;
                 }
             }
+        }
+
+        private void AnimateScroll(ScrollViewer scrollViewer, double targetOffset)
+        {
+            var animation = new System.Windows.Media.Animation.DoubleAnimation
+            {
+                From = scrollViewer.HorizontalOffset,
+                To = targetOffset,
+                Duration = TimeSpan.FromMilliseconds(200),
+                EasingFunction = new System.Windows.Media.Animation.QuadraticEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut }
+            };
+
+            var storyboard = new System.Windows.Media.Animation.Storyboard();
+            storyboard.Children.Add(animation);
+            System.Windows.Media.Animation.Storyboard.SetTarget(animation, scrollViewer);
+            System.Windows.Media.Animation.Storyboard.SetTargetProperty(animation,
+                new PropertyPath(ScrollViewerBehavior.HorizontalOffsetProperty));
+            storyboard.Begin();
         }
 
         private static T? FindVisualChild<T>(DependencyObject? parent) where T : DependencyObject
@@ -354,10 +519,17 @@ namespace ARC_Sight
 
         private async Task FetchData()
         {
+            _isFetchInProgress = true;
+            UpdateApiHealthIndicator();
+
             try
             {
-                StatusText.Text = "Updating...";
-                _client.DefaultRequestHeaders.UserAgent.ParseAdd("ARC-Sight/1.0");
+                if (StatusTextRef != null) StatusTextRef.Text = "Updating...";
+                if (Tabs.Count == 0)
+                {
+                    if (LoadingPanelRef != null) LoadingPanelRef.Visibility = Visibility.Visible;
+                    if (MainTabControlRef != null) MainTabControlRef.Visibility = Visibility.Collapsed;
+                }
 
                 var json = await _client.GetStringAsync(API_URL);
 
@@ -380,18 +552,83 @@ namespace ARC_Sight
                 if (rawEvents != null && rawEvents.Count > 0)
                 {
                     ProcessScheduleData(rawEvents);
-                    StatusText.Text = "";
+                    if (StatusTextRef != null) StatusTextRef.Text = "";
+                    _lastSuccessfulFetchUtc = DateTime.UtcNow;
+                    _lastFetchHadError = false;
                 }
                 else
                 {
-                    StatusText.Text = "No events found";
+                    if (StatusTextRef != null) StatusTextRef.Text = "No events found";
+                    _lastSuccessfulFetchUtc = DateTime.UtcNow;
+                    _lastFetchHadError = false;
                 }
+
+                if (LoadingPanelRef != null) LoadingPanelRef.Visibility = Visibility.Collapsed;
+                if (MainTabControlRef != null) MainTabControlRef.Visibility = Visibility.Visible;
             }
             catch (Exception ex)
             {
-                StatusText.Text = "API Error";
+                if (StatusTextRef != null) StatusTextRef.Text = "API Error";
+                _lastFetchHadError = true;
+                if (LoadingPanelRef != null) LoadingPanelRef.Visibility = Visibility.Collapsed;
+                if (MainTabControlRef != null) MainTabControlRef.Visibility = Visibility.Visible;
                 System.Diagnostics.Debug.WriteLine(ex.Message);
             }
+            finally
+            {
+                _isFetchInProgress = false;
+                UpdateApiHealthIndicator();
+            }
+        }
+
+        private void UpdateApiHealthIndicator()
+        {
+            if (ApiHealthTextRef == null) return;
+
+            string text;
+            Brush color;
+
+            if (_isFetchInProgress)
+            {
+                text = "API: syncing...";
+                color = Brushes.DeepSkyBlue;
+            }
+            else if (_lastSuccessfulFetchUtc == null)
+            {
+                if (_lastFetchHadError)
+                {
+                    text = "API: error";
+                    color = Brushes.OrangeRed;
+                }
+                else
+                {
+                    text = "API: waiting...";
+                    color = Brushes.Gray;
+                }
+            }
+            else
+            {
+                int ageSeconds = Math.Max(0, (int)(DateTime.UtcNow - _lastSuccessfulFetchUtc.Value).TotalSeconds);
+
+                if (_lastFetchHadError)
+                {
+                    text = $"API: error • last ok {ageSeconds}s ago";
+                    color = Brushes.OrangeRed;
+                }
+                else if (ageSeconds <= ApiStaleSeconds)
+                {
+                    text = $"API: live • updated {ageSeconds}s ago";
+                    color = Brushes.LightGreen;
+                }
+                else
+                {
+                    text = $"API: stale • updated {ageSeconds}s ago";
+                    color = Brushes.Gold;
+                }
+            }
+
+            ApiHealthTextRef.Text = text;
+            ApiHealthTextRef.Foreground = color;
         }
 
         private void ProcessScheduleData(List<ScheduleEvent> schedule)
@@ -428,6 +665,7 @@ namespace ARC_Sight
             if (allTab == null) { allTab = new TabViewModel("ALL"); Tabs.Insert(0, allTab); }
 
             MergeCards(allTab.Cards, data);
+            ApplyPlannerSort(allTab);
 
             var grouped = data.GroupBy(e => e.Raw.name).OrderBy(g => g.Key);
             foreach (var group in grouped)
@@ -436,24 +674,75 @@ namespace ARC_Sight
                 var tab = Tabs.FirstOrDefault(t => t.Header == tabName);
                 if (tab == null) { tab = new TabViewModel(tabName); Tabs.Add(tab); }
                 MergeCards(tab.Cards, group.ToList());
+                ApplyPlannerSort(tab);
             }
+        }
+
+        private void PlannerSortCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (PlannerSortComboRef?.SelectedItem is ComboBoxItem selected)
+            {
+                _plannerSortMode = selected.Tag?.ToString() ?? "active";
+                ApplyPlannerSortToAllTabs();
+            }
+        }
+
+        private void ApplyPlannerSortToAllTabs()
+        {
+            foreach (var tab in Tabs)
+            {
+                ApplyPlannerSort(tab);
+            }
+        }
+
+        private void ApplyPlannerSort(TabViewModel tab)
+        {
+            if (tab?.SortedCards == null) return;
+
+            tab.SortedCards.SortDescriptions.Clear();
+
+            if (_plannerSortMode == "soonest")
+            {
+                tab.SortedCards.SortDescriptions.Add(new SortDescription(nameof(CardViewModel.TargetTime), ListSortDirection.Ascending));
+                tab.SortedCards.SortDescriptions.Add(new SortDescription(nameof(CardViewModel.IsActive), ListSortDirection.Descending));
+            }
+            else if (_plannerSortMode == "map")
+            {
+                tab.SortedCards.SortDescriptions.Add(new SortDescription(nameof(CardViewModel.MapSortKey), ListSortDirection.Ascending));
+                tab.SortedCards.SortDescriptions.Add(new SortDescription(nameof(CardViewModel.TargetTime), ListSortDirection.Ascending));
+            }
+            else
+            {
+                tab.SortedCards.SortDescriptions.Add(new SortDescription(nameof(CardViewModel.IsActive), ListSortDirection.Descending));
+                tab.SortedCards.SortDescriptions.Add(new SortDescription(nameof(CardViewModel.TargetTime), ListSortDirection.Ascending));
+            }
+
+            tab.SortedCards.Refresh();
         }
 
         private void MergeCards(ObservableCollection<CardViewModel> collection, List<EventDisplayData> newEvents)
         {
+            // Build lookup dictionaries for O(1) access
+            var newEventKeys = new HashSet<(string?, string?)>(
+                newEvents.Select(e => (e.Raw.name, e.Raw.map)));
+            var existingCards = collection.ToDictionary(
+                c => (c.RawData.name, c.RawData.map), c => c);
+
+            // Remove cards not in new events
             for (int i = collection.Count - 1; i >= 0; i--)
             {
                 var card = collection[i];
-                if (!newEvents.Any(e => e.Raw.name == card.RawData.name && e.Raw.map == card.RawData.map))
+                if (!newEventKeys.Contains((card.RawData.name, card.RawData.map)))
                 {
                     collection.RemoveAt(i);
                 }
             }
 
+            // Update existing or add new cards
             foreach (var evt in newEvents)
             {
-                var existing = collection.FirstOrDefault(c => c.RawData.name == evt.Raw.name && c.RawData.map == evt.Raw.map);
-                if (existing != null)
+                var key = (evt.Raw.name, evt.Raw.map);
+                if (existingCards.TryGetValue(key, out var existing))
                 {
                     existing.UpdateData(evt.Raw);
                 }
@@ -477,11 +766,7 @@ namespace ARC_Sight
 
             string k = key.Replace(" ", "_").ToLower().Trim();
 
-            if (Translations.ContainsKey(k))
-            {
-                return Translations[k];
-            }
-            return key.ToUpper();
+            return Translations.TryGetValue(k, out var value) ? value : key.ToUpper();
         }
 
         private void LoadConfig()
@@ -490,12 +775,20 @@ namespace ARC_Sight
             {
                 foreach (var line in File.ReadAllLines(ConfigFile))
                 {
-                    if (line.StartsWith("hotkey=")) Hotkey = line.Split('=')[1];
-                    if (line.StartsWith("language=")) CurrentLanguage = line.Split('=')[1];
-                    if (line.StartsWith("notify_minutes=") && int.TryParse(line.Split('=')[1], out int m)) NotifySeconds = m * 60;
-                    if (line.StartsWith("sound_enabled=")) { if (bool.TryParse(line.Split('=')[1], out bool s)) SoundEnabled = s; }
-                    if (line.StartsWith("show_local_time=")) { if (bool.TryParse(line.Split('=')[1], out bool sl)) ShowLocalTime = sl; }
-                    if (line.StartsWith("last_seen_version=")) LastSeenVersion = line.Split('=')[1];
+                    var parts = line.Split('=', 2);
+                    if (parts.Length != 2) continue;
+
+                    string key = parts[0].Trim();
+                    string value = parts[1].Trim();
+
+                    if (key == "hotkey") Hotkey = value;
+                    if (key == "language") CurrentLanguage = value;
+                    if (key == "notify_minutes" && int.TryParse(value, out int m)) NotifySeconds = m * 60;
+                    if (key == "sound_enabled" && bool.TryParse(value, out bool s)) SoundEnabled = s;
+                    if (key == "show_local_time" && bool.TryParse(value, out bool sl)) ShowLocalTime = sl;
+                    if (key == "last_seen_version") LastSeenVersion = value;
+                    if (key == "discord_webhook_url") DiscordWebhookUrl = value;
+                    if (key == "discord_webhook_enabled" && bool.TryParse(value, out bool dwe)) DiscordWebhookEnabled = dwe;
                 }
             }
         }
@@ -511,7 +804,9 @@ namespace ARC_Sight
                     $"language={CurrentLanguage}",
                     $"sound_enabled={SoundEnabled}",
                     $"show_local_time={ShowLocalTime}",
-                    $"last_seen_version={LastSeenVersion}"
+                    $"last_seen_version={LastSeenVersion}",
+                    $"discord_webhook_enabled={DiscordWebhookEnabled}",
+                    $"discord_webhook_url={DiscordWebhookUrl}"
                 };
                 File.WriteAllLines(ConfigFile, lines);
             }
@@ -573,6 +868,26 @@ namespace ARC_Sight
             return 0x78;
         }
 
+        private void MainTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (e.Source is TabControl tabControl && tabControl.SelectedContent != null)
+            {
+                // Find the content presenter
+                var contentPresenter = FindVisualChild<ContentPresenter>(tabControl);
+                if (contentPresenter != null)
+                {
+                    // Apply fade-in animation
+                    var fadeIn = new System.Windows.Media.Animation.DoubleAnimation
+                    {
+                        From = 0,
+                        To = 1,
+                        Duration = TimeSpan.FromMilliseconds(200)
+                    };
+                    contentPresenter.BeginAnimation(UIElement.OpacityProperty, fadeIn);
+                }
+            }
+        }
+
         private void OpenSettings_Click(object sender, RoutedEventArgs e)
         {
             SettingsWindow sw = new SettingsWindow(); sw.Owner = this;
@@ -581,6 +896,60 @@ namespace ARC_Sight
                 UnregisterHotKey(_windowHandle, 1); RegisterHotKey(_windowHandle, 1, 0, GetVkCode(Hotkey));
                 Tabs.Clear(); _ = InitialLoad(); UpdateLocalizedUI();
             }
+        }
+
+        private void CopyNextEvent_Click(object sender, RoutedEventArgs e)
+        {
+            CopyNextEventSummaryToClipboard();
+        }
+
+        private void TrayCopyNext_Click(object sender, RoutedEventArgs e)
+        {
+            CopyNextEventSummaryToClipboard();
+        }
+
+        private void CopyNextEventSummaryToClipboard()
+        {
+            var nextCard = GetNextUpcomingCard();
+            if (nextCard == null)
+            {
+                ShowLocalToast("ARC-Sight", "No upcoming event to copy.");
+                return;
+            }
+
+            var startLocal = DateTimeOffset.FromUnixTimeMilliseconds(nextCard.RawData.startTime).LocalDateTime;
+            var diffMinutes = Math.Max(1, (int)Math.Ceiling((nextCard.RawData.startTime - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) / 60000.0));
+            string summary = $"Next ARC Raiders event: {nextCard.Title} | {nextCard.Map} | {startLocal:HH:mm} ({diffMinutes}m)";
+
+            try
+            {
+                Clipboard.SetText(summary);
+                ShowLocalToast("ARC-Sight", "Next event copied to clipboard.");
+            }
+            catch
+            {
+                ShowLocalToast("ARC-Sight", "Could not access clipboard.");
+            }
+        }
+
+        private CardViewModel? GetNextUpcomingCard()
+        {
+            var allTab = Tabs.FirstOrDefault(t => t.Header == "ALL");
+            if (allTab == null || allTab.Cards.Count == 0) return null;
+
+            long nowUnix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            return allTab.Cards
+                .Where(card => card.RawData.startTime > nowUnix)
+                .OrderBy(card => card.RawData.startTime)
+                .FirstOrDefault();
+        }
+
+        private static void ShowLocalToast(string title, string message)
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                try { new ToastWindow(title, message).Show(); } catch { }
+            });
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -593,14 +962,86 @@ namespace ARC_Sight
         private void ToggleLock_Click(object sender, RoutedEventArgs e)
         {
             _isWindowLocked = !_isWindowLocked;
-            LockBtn.Content = _isWindowLocked ? "🔒" : "🔓";
-            LockBtn.Foreground = _isWindowLocked ? new SolidColorBrush(Color.FromRgb(255, 85, 0)) : Brushes.White;
+            // Segoe MDL2 Assets: E72E = Lock, E785 = Unlock
+            if (LockBtnRef != null)
+            {
+                LockBtnRef.Content = _isWindowLocked ? "\uE72E" : "\uE785";
+                LockBtnRef.Foreground = _isWindowLocked ? new SolidColorBrush(Color.FromRgb(255, 85, 0)) : Brushes.White;
+            }
             this.ResizeMode = _isWindowLocked ? ResizeMode.NoResize : ResizeMode.CanResize;
         }
 
         private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) { if (!_isWindowLocked) { _isDragging = true; _dragOffset = e.GetPosition(this); this.CaptureMouse(); } }
         private void MainWindow_MouseMove(object sender, MouseEventArgs e) { if (_isDragging) { var diff = e.GetPosition(this) - _dragOffset; this.Left += diff.X; this.Top += diff.Y; } }
         private void MainWindow_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) { if (_isDragging) { _isDragging = false; this.ReleaseMouseCapture(); } }
+
+        #region System Tray
+
+        private void TrayIcon_TrayMouseDoubleClick(object sender, RoutedEventArgs e)
+        {
+            ShowAndActivate();
+        }
+
+        private void TrayOpen_Click(object sender, RoutedEventArgs e)
+        {
+            ShowAndActivate();
+        }
+
+        private void TrayHide_Click(object sender, RoutedEventArgs e)
+        {
+            this.Hide();
+        }
+
+        private void TrayMenu_Opened(object sender, RoutedEventArgs e)
+        {
+            if (sender is ContextMenu menu)
+            {
+                var showItem = menu.Items.OfType<MenuItem>().FirstOrDefault(i => i.Name == "TrayShowItem");
+                var hideItem = menu.Items.OfType<MenuItem>().FirstOrDefault(i => i.Name == "TrayHideItem");
+                if (showItem == null || hideItem == null) return;
+
+                bool isVisible = this.Visibility == Visibility.Visible;
+                showItem.Visibility = isVisible ? Visibility.Collapsed : Visibility.Visible;
+                hideItem.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private void TrayRestart_Click(object sender, RoutedEventArgs e)
+        {
+            // Get the current executable path
+            var exePath = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(exePath))
+            {
+                // Start a new instance
+                System.Diagnostics.Process.Start(exePath);
+                // Close current instance
+                Application.Current.Shutdown();
+            }
+        }
+
+        private void TrayExit_Click(object sender, RoutedEventArgs e)
+        {
+            // Dispose tray icon and exit
+            TrayIconRef?.Dispose();
+            Application.Current.Shutdown();
+        }
+
+        private void ShowAndActivate()
+        {
+            this.Show();
+            this.WindowState = WindowState.Normal;
+            this.Activate();
+            this.Focus();
+        }
+
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            // Dispose tray icon when closing
+            TrayIconRef?.Dispose();
+            base.OnClosing(e);
+        }
+
+        #endregion
     }
 
     public class ScheduleEvent
@@ -616,6 +1057,16 @@ namespace ARC_Sight
     {
         public ScheduleEvent Raw { get; set; }
         public EventDisplayData(ScheduleEvent raw) { Raw = raw; }
+    }
+
+    public class AlertNotification
+    {
+        public string Title { get; set; } = "";
+        public string Message { get; set; } = "";
+        public string EventName { get; set; } = "";
+        public string MapName { get; set; } = "";
+        public string? ImageUrl { get; set; }
+        public ScheduleEvent RawEvent { get; set; } = new ScheduleEvent();
     }
 
     public class TabViewModel
@@ -639,10 +1090,13 @@ namespace ARC_Sight
 
     public class CardViewModel : INotifyPropertyChanged
     {
+        private static readonly Dictionary<string, BitmapImage> _imageCache = new();
+
         public ScheduleEvent RawData;
-        public event Action<string, string>? RequestNotification;
+        public event Action<AlertNotification>? RequestNotification;
         public string Title => MainWindow.GetTrans(RawData.name ?? "", "TABS");
         public string Map => MainWindow.GetTrans(RawData.map ?? "", "MAPS");
+        public string MapSortKey => RawData.map ?? "";
         public string AlertLabel => MainWindow.GetTrans("alert_button_label", "UI");
         public ImageSource? BackgroundImage { get; private set; }
 
@@ -666,6 +1120,9 @@ namespace ARC_Sight
 
         private Brush _borderColor = Brushes.Transparent;
         public Brush BorderColor { get => _borderColor; set { if (_borderColor != value) { _borderColor = value; OnPropertyChanged(nameof(BorderColor)); } } }
+
+        private bool _isInAlertState = false;
+        public bool IsInAlertState { get => _isInAlertState; set { if (_isInAlertState != value) { _isInAlertState = value; OnPropertyChanged(nameof(IsInAlertState)); } } }
 
         private bool _isAlertEnabled = false;
         public bool IsAlertEnabled { get => _isAlertEnabled; set { _isAlertEnabled = value; OnPropertyChanged(nameof(IsAlertEnabled)); if (!value) HasNotified = false; } }
@@ -707,8 +1164,30 @@ namespace ARC_Sight
             else if (mapName.Contains("Buried")) imgFile = "Ville_enfouie.png";
             else if (mapName.Contains("Gate")) imgFile = "Portail_bleu.png";
             else if (mapName.Contains("Stella")) imgFile = "Stella_montis.png";
+
+            // Check cache first
+            if (_imageCache.TryGetValue(imgFile, out var cachedImage))
+            {
+                BackgroundImage = cachedImage;
+                return;
+            }
+
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", imgFile);
-            if (File.Exists(path)) { try { BackgroundImage = new BitmapImage(new Uri(path)); } catch { } }
+            if (File.Exists(path))
+            {
+                try
+                {
+                    var bitmap = new BitmapImage();
+                    bitmap.BeginInit();
+                    bitmap.UriSource = new Uri(path, UriKind.Absolute);
+                    bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                    bitmap.EndInit();
+                    bitmap.Freeze(); // Make it cross-thread accessible
+                    _imageCache[imgFile] = bitmap;
+                    BackgroundImage = bitmap;
+                }
+                catch { }
+            }
         }
 
         public void UpdateTimer()
@@ -738,6 +1217,7 @@ namespace ARC_Sight
                 TimerColor = Brushes.OrangeRed;
                 BorderColor = Brushes.OrangeRed;
                 IsAlertEnabled = false;
+                IsInAlertState = false;
                 LocalTimeText = "";
             }
             else
@@ -757,6 +1237,7 @@ namespace ARC_Sight
                 {
                     TimerColor = Brushes.Yellow;
                     BorderColor = Brushes.Yellow;
+                    IsInAlertState = true;
 
                     if (IsAlertEnabled && !HasNotified)
                     {
@@ -764,10 +1245,19 @@ namespace ARC_Sight
                         if (string.IsNullOrEmpty(msgPattern) || msgPattern == "NOTIFY_MESSAGE")
                             msgPattern = "STARTING IN {minutes} MIN - {map_name}";
 
-                        string msg = msgPattern.Replace("{minutes}", ((int)diff.TotalMinutes).ToString())
+                        int minutes = Math.Max(1, (int)Math.Ceiling(diff.TotalMinutes));
+                        string msg = msgPattern.Replace("{minutes}", minutes.ToString())
                                                .Replace("{map_name}", Map);
 
-                        RequestNotification?.Invoke(Title, msg);
+                        RequestNotification?.Invoke(new AlertNotification
+                        {
+                            Title = Title,
+                            Message = msg,
+                            EventName = Title,
+                            MapName = Map,
+                            ImageUrl = RawData.icon,
+                            RawEvent = RawData
+                        });
                         HasNotified = true;
                     }
                 }
@@ -775,6 +1265,7 @@ namespace ARC_Sight
                 {
                     TimerColor = Brushes.White;
                     BorderColor = new SolidColorBrush(Color.FromRgb(60, 60, 60));
+                    IsInAlertState = false;
                     HasNotified = false;
                 }
             }
@@ -789,5 +1280,32 @@ namespace ARC_Sight
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+
+    /// <summary>
+    /// Helper class for animating ScrollViewer horizontal offset
+    /// </summary>
+    public static class ScrollViewerBehavior
+    {
+        public static readonly DependencyProperty HorizontalOffsetProperty =
+            DependencyProperty.RegisterAttached(
+                "HorizontalOffset",
+                typeof(double),
+                typeof(ScrollViewerBehavior),
+                new PropertyMetadata(0.0, OnHorizontalOffsetChanged));
+
+        public static double GetHorizontalOffset(DependencyObject obj) =>
+            (double)obj.GetValue(HorizontalOffsetProperty);
+
+        public static void SetHorizontalOffset(DependencyObject obj, double value) =>
+            obj.SetValue(HorizontalOffsetProperty, value);
+
+        private static void OnHorizontalOffsetChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (d is ScrollViewer scrollViewer)
+            {
+                scrollViewer.ScrollToHorizontalOffset((double)e.NewValue);
+            }
+        }
     }
 }

@@ -43,6 +43,7 @@
 You can access settings by clicking the **Gear Icon** on the overlay or by right-clicking the **System Tray Icon** (near your clock).
 * **Hotkey:** Change the key to show/hide the overlay.
 * **Alerts:** Set how many minutes before an event you want to be notified.
+* **Discord Webhook:** Send alert embeds to Discord (event, map, start time, thumbnail image when available).
 * **Language:** Switch the interface language.*
 
 > **⚠️ Statistical Data (Heartbeat)**
@@ -89,6 +90,7 @@ You can access settings by clicking the **Gear Icon** on the overlay or by right
 Vous pouvez accéder aux réglages via la **Roue Crantée** sur l'overlay ou en faisant un clic-droit sur l'icône dans la **Barre des tâches** (près de l'heure).
 * **Raccourci :** Changez la touche pour afficher/masquer.
 * **Alertes :** Définissez combien de minutes avant l'événement vous souhaitez être prévenu.
+* **Webhook Discord :** Envoyez des embeds d'alerte sur Discord (événement, carte, heure de départ, miniature si disponible).
 * **Langue :** Changez la langue de l'interface.
 
 > **⚠️ Données Statistiques (Heartbeat)**
